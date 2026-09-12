@@ -4,25 +4,31 @@
 
 Several crucial behaviors are not stable/publicly documented enough to assume. Codex MUST implement and run (or prepare for the maintainer to run) a narrow live compatibility spike before building the full command surface.
 
-Do not work around a failed spike with browser automation.
+Do not work around failed import/export behavior with browser automation. Browser use is permitted only for the login/session-acquisition ceremony described in the specs.
 
 ## Compatibility spike
 
 Use a dedicated/non-critical Goodreads test account if possible and a handful of known books.
 
-Capture fixtures/results without committing real cookies, passwords, private library exports, or personally identifying data.
+Capture fixtures/results without committing real cookies, browser profiles, private library exports, or personally identifying data.
 
-### A. Authentication
+### A. Browser-assisted authentication
 
 Validate:
 
-- ordinary email/password sign-in can be completed using standard HTTP requests only;
-- CSRF/form handling can be discovered by parsing the current login page;
-- authenticated session can be serialized/restored;
+- Chrome, Chromium, and Edge discovery on supported platforms where available;
+- launch with an isolated temporary user-data directory;
+- remote-debugging endpoint is loopback-only and ephemeral;
+- the browser is visible and the user can complete ordinary Goodreads authentication manually;
+- social/provider login flows can complete because the tool does not automate or intercept them;
+- authenticated Goodreads cookies can be captured through CDP without inspecting credential fields;
+- captured session can be serialized, restored into the ordinary Go HTTP client, and accepted by Goodreads;
 - expired session is detectable from the import/export page;
-- logout/local session deletion behavior is understood.
+- temporary browser/profile cleanup works on success, cancellation, timeout, and ordinary failure;
+- `gr logout`/local session deletion behavior is understood;
+- no Goodreads password is ever passed to CLI code or logs.
 
-If ordinary login cannot be implemented without browser automation, stop and report this as a product decision. Do not add Playwright.
+If supported Chromium browsers cannot provide a reliable reusable Goodreads session this way, stop and report this as a product decision. Do not fall back to password collection or library-operation browser automation.
 
 ### B. Export
 
@@ -85,7 +91,11 @@ Test safe cases:
 - malformed CSV;
 - expired session;
 - invalid CSRF;
-- network timeout after import submission if it can be simulated safely.
+- network timeout after import submission if it can be simulated safely;
+- browser not installed;
+- login cancelled;
+- login timeout;
+- browser exits before session capture.
 
 Document what response/page markers indicate each state.
 
@@ -105,14 +115,30 @@ High coverage for deterministic code:
 - JSON output models
 - error mapping
 - session serialization/redaction
+- supported-browser discovery/path selection logic
+- cookie filtering/conversion from CDP representation to session representation
 
 Table-driven tests are preferred.
+
+### Browser-auth component tests
+
+Keep most browser-auth logic testable without live Goodreads:
+
+- browser executable discovery;
+- command-line construction uses an isolated user-data directory;
+- debugging is loopback-only;
+- temporary directory lifecycle/cleanup;
+- cancellation/timeout cleanup;
+- CDP cookie filtering and session conversion;
+- no attachment to default browser profiles.
+
+A small opt-in integration test may launch a real local Chromium against a local test page/server to prove CDP session capture without involving Goodreads credentials.
 
 ### HTTP adapter tests
 
 Use `httptest.Server` with sanitized HTML/CSV fixtures to model:
 
-- login + CSRF + redirects
+- authenticated session validation
 - export trigger/poll/download
 - import form/post/result
 - session expiry
@@ -133,14 +159,15 @@ Use a fake Goodreads adapter. Assert semantic invariants:
 
 ### CLI tests
 
-Exercise Cobra commands with injected fake service:
+Exercise Cobra commands with injected fake service/session acquirer:
 
 - args/flags
 - human output smoke tests
 - exact JSON schemas
 - stdout/stderr separation
 - exit code mapping
-- no password leakage
+- login invokes session acquisition rather than collecting credentials
+- no secret leakage
 
 ### MCP contract tests
 
@@ -156,7 +183,9 @@ Example:
 GOODREADS_LIVE_TESTS=1 go test ./internal/goodreads -tags=live
 ```
 
-Live tests should be few, serial, reversible/idempotent where possible, and polite.
+Live import/export tests should be few, serial, reversible/idempotent where possible, and polite.
+
+Interactive browser-login tests are maintainer-run compatibility checks, not CI. They must never rely on stored account passwords.
 
 ## CI
 
@@ -169,23 +198,25 @@ Initial CI should include:
 - build on Linux/macOS/Windows
 - dependency/vulnerability scan if practical
 
-No live Goodreads calls in PR CI.
+No live Goodreads calls or interactive browsers in PR CI.
 
 ## Implementation slices
 
 ### Slice 0 — compatibility harness
 
+- session model/store abstraction
+- browser discovery + isolated Chromium login bootstrap
 - HTTP client/cookie jar scaffolding
 - fixture parser helpers
-- dev-only commands/tests needed to probe auth/export/import
+- dev-only commands/tests needed to probe session validation/export/import
 - `specs` findings updated with concrete current behavior
 
-Deliverable: written compatibility matrix. No polished CLI required.
+Deliverable: written compatibility matrix proving both browser-assisted session reuse and import/export semantics. No polished CLI required.
 
 ### Slice 1 — read path
 
-- session store abstraction
-- login/status/logout
+- production session store
+- polished login/status/logout
 - export workflow
 - CSV parser
 - ISBN normalization
@@ -222,19 +253,21 @@ Only proceed if Slice 0 D-gate passed.
 - `gr mcp --http`
 - remote bearer auth
 - container/deployment example (e.g. Render) if wanted
+- session provisioning for headless deployment
 - no provider-specific logic in core
 
 ## Release criteria for v0.1
 
 - compatibility matrix documents current Goodreads behavior;
+- `gr login` uses Goodreads' own browser login UI and stores only the reusable session;
 - core read/write commands work against a real test account;
 - Goodreads remains the only library source of truth;
-- no browser runtime/dependency;
+- browser/CDP is used only for authentication, never library operations;
 - no local library DB;
 - secrets are not stored in plaintext by default;
 - JSON contracts and exit codes tested;
 - unit/adapter/application tests green on supported platforms;
-- installation is a single binary;
+- installation is a single binary plus an already-installed supported Chromium-family browser for interactive login;
 - README accurately states limitations.
 
 ## Compatibility policy
