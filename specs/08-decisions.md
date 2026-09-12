@@ -14,8 +14,11 @@ These come from the agreed design and should not be reopened during routine impl
 | Source of truth | Goodreads only |
 | Local library DB | None |
 | Sync engine | None |
-| Goodreads integration | Authenticated import/export over ordinary HTTP |
-| Browser automation | Explicitly out of scope |
+| Goodreads library integration | Authenticated import/export over ordinary HTTP |
+| Authentication | Browser-assisted login using a temporary isolated Chromium-family profile; capture reusable Goodreads session cookies via CDP |
+| Password handling | CLI never collects or stores the user's Goodreads password |
+| Browser automation | Allowed only for authentication/session acquisition; forbidden for Goodreads library operations |
+| Supported login browsers V1 | Chrome, Chromium, Edge where discoverable |
 | Public book metadata/search | Out of scope; caller/AI resolves ISBN via web |
 | Mutation identity | ISBN-10/ISBN-13 |
 | Read freshness | Fresh Goodreads export per query invocation |
@@ -54,30 +57,40 @@ Use OS credential/keychain storage for local sessions. Headless/remote deploymen
 
 Library choice is an implementation detail; prefer a maintained cross-platform package with minimal complexity.
 
-## One product decision that may need maintainer input
+### D5 — browser-assisted login implementation
 
-### D5 — authentication coverage for the first public release
+Authentication coverage is now resolved: V1 should use a supported local Chromium-family browser rather than implementing Goodreads email/password HTTP login.
 
-**Recommended default:** support ordinary Goodreads email/password login only. If a user account relies on Amazon/Apple/Google/social login and cannot use the ordinary form, return a clear unsupported-auth message rather than adding browser automation.
+Implementation defaults:
 
-Why this may need a decision: "easy to share with friends" improves if social-login-only users are supported, but implementing those flows without browser automation may be disproportionate or impossible. We should first run the auth compatibility spike. If standard login works for the intended users, keep V1 narrow.
+- auto-detect Chrome, Chromium, or Edge;
+- launch a visible browser with a dedicated temporary profile;
+- remote debugging/CDP bound to loopback only;
+- user performs the login manually on Goodreads/provider pages;
+- no credential typing/click automation;
+- capture only reusable Goodreads session cookies/state;
+- validate the captured session through the normal HTTP adapter;
+- store via the session abstraction/keychain;
+- close the launched browser and remove the temporary profile after capture;
+- no fallback that asks the CLI for a password;
+- no use of browser/CDP for add/start/finish/rate/review/import/export.
 
-No implementation work should add a browser to solve D5 without explicitly revisiting the architecture.
+Supporting Firefox/Safari is explicitly deferred. If Chromium-family login cannot reliably yield a reusable Goodreads HTTP session, stop and revisit the product decision rather than expanding browser automation.
 
 ## Blocking empirical questions — not product decisions
 
 Codex must answer these through the compatibility spike in `07-testing-and-delivery.md`:
 
-1. **Login:** can current Goodreads email/password auth be completed reliably with ordinary HTTP + cookies + CSRF parsing?
+1. **Browser login/session reuse:** can a temporary Chrome/Chromium/Edge profile complete the current Goodreads login flow and yield cookies that can be serialized/restored into the Go HTTP client and accepted by the import/export pages?
 2. **Fresh export:** what exact current workflow triggers a new export, how is completion detected, and can stale exports be distinguished?
 3. **Minimal import:** what headers/fields does Goodreads currently accept for a one-book import?
 4. **Existing-book updates:** does re-importing a one-row CSV reliably update rating, status, date read, and review for a book already in the library?
 5. **Status encoding:** does current import honor `Exclusive Shelf`, `Bookshelves`, or another field for `to-read` / `currently-reading` / `read`?
 6. **Preservation:** can a narrow mutation preserve unrelated rating/review/custom-shelf state?
 7. **Import completion:** how does Goodreads signal queued, completed, rejected, or partially failed imports?
-8. **Session lifetime:** which cookies must be persisted and how is expiry represented?
+8. **Session lifetime:** which Goodreads cookies must be persisted, how long do they remain valid, and how is expiry represented?
 
-If #4 or #6 fails, stop. The central design assumption is invalid and should be discussed before implementation continues.
+If #1 fails, revisit authentication before proceeding. If #4 or #6 fails, stop: the central import/export mutation design is invalid and should be discussed before implementation continues.
 
 ## Known CSV limitations accepted by design
 
