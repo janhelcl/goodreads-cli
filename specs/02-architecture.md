@@ -13,7 +13,10 @@ MCP transport ──────────┤
                  Goodreads adapter
                 ┌───────┴────────┐
                 │                │
-          auth/session      import/export
+       auth/session bootstrap  import/export
+                │                │
+       temporary Chromium        │
+       login ceremony only       │
                 │                │
                 └───────┬────────┘
                         ▼
@@ -21,6 +24,8 @@ MCP transport ──────────┤
 ```
 
 All Goodreads behavior lives below the application boundary. CLI and MCP MUST NOT contain CSV manipulation or Goodreads HTTP details.
+
+The browser-assisted authentication path is a narrow bootstrap exception. It may launch a supported local Chromium-family browser with an isolated temporary profile so the user can authenticate on Goodreads' own page and the application can capture the resulting Goodreads session cookies. Once the session exists, all Goodreads library operations use ordinary HTTP plus import/export. Browser/DOM automation MUST NOT be used for library operations.
 
 ## Suggested Go package boundaries
 
@@ -31,6 +36,7 @@ cmd/                    Cobra wiring only
 internal/app/           use cases / application service
 internal/domain/        Book, status, update/filter/result types
 internal/goodreads/     authenticated HTTP + import/export implementation
+internal/authbrowser/   browser-assisted session acquisition only
 internal/csvgr/         Goodreads CSV parsing/encoding
 internal/session/       credential/session persistence abstraction
 internal/mcp/           MCP tool/transport adapter
@@ -53,14 +59,14 @@ const (
 )
 
 type Book struct {
-    BookID       string        // Goodreads export identity, read-only/internal
+    BookID       string
     Title        string
     Author       string
     ISBN10       string
     ISBN13       string
     Rating       int
-    AverageRating *float64     // informational; from export only
-    DateRead     *time.Time    // date semantics, no time-of-day contract
+    AverageRating *float64
+    DateRead     *time.Time
     DateAdded    *time.Time
     Status       ReadingStatus
     Bookshelves  []string
@@ -110,7 +116,15 @@ type Goodreads interface {
 }
 ```
 
-Authentication/session acquisition may be a separate interface because it has interactive concerns.
+Authentication/session acquisition is a separate interactive boundary. A representative interface is:
+
+```go
+type SessionAcquirer interface {
+    Acquire(ctx context.Context) (Session, error)
+}
+```
+
+The production implementation may use Chromium DevTools Protocol (CDP) only for this login ceremony. The HTTP Goodreads adapter itself MUST NOT depend on a browser runtime.
 
 The application service should orchestrate:
 
@@ -121,6 +135,23 @@ The application service should orchestrate:
 5. submit import;
 6. map the Goodreads outcome to a stable result/error.
 
+## Authentication bootstrap boundary
+
+`gr login` is intentionally different from ordinary application operations:
+
+1. find a supported installed Chromium-family browser;
+2. create an isolated temporary user-data directory;
+3. launch the browser with remote debugging bound to loopback only;
+4. navigate to the Goodreads sign-in page;
+5. the user completes authentication interactively in the browser, including any social-provider/2FA flow Goodreads presents;
+6. detect authenticated Goodreads state without inspecting credential fields;
+7. read only the Goodreads cookies required for the authenticated HTTP session;
+8. validate those cookies through the normal Goodreads HTTP adapter;
+9. persist session material through `SessionStore`;
+10. close the launched browser and remove the temporary profile.
+
+Do not read cookies from the user's normal browser profile. Do not automate typing/clicking credentials. Do not use a headless browser for login.
+
 ## No repository abstraction
 
 Do **not** introduce a generic `Repository` backed by SQLite/files. Goodreads is the remote source. The Goodreads adapter is sufficient.
@@ -128,6 +159,8 @@ Do **not** introduce a generic `Repository` backed by SQLite/files. Goodreads is
 ## Temporary data
 
 Prefer in-memory CSV bytes. If a temporary file is required by a library/API, use the OS temporary directory, restrictive permissions, and delete it promptly. Do not place library exports in the config directory automatically.
+
+The temporary browser profile used for authentication is ephemeral transport/authentication state. It MUST be created in a private temp location and deleted after the session has been captured and validated. It is not application state.
 
 `gr export --out file.csv` is the only normal path that intentionally persists a library CSV.
 
@@ -151,6 +184,8 @@ All network operations MUST accept `context.Context`.
 
 Have one sensible default request/operation timeout and allow global override. Export generation may require polling; total operation timeout is distinct from per-request timeout if needed.
 
+Authentication may need a longer user-interaction timeout than ordinary network operations. It must still be cancellable and must clean up the temporary browser/profile on cancellation.
+
 No infinite polling.
 
 ## Error taxonomy
@@ -159,17 +194,19 @@ Use typed/sentinel application errors so CLI and MCP map failures consistently:
 
 - `ErrNotAuthenticated`
 - `ErrSessionExpired`
+- `ErrBrowserUnavailable`
+- `ErrLoginCancelled`
 - `ErrBookNotFound`
 - `ErrInvalidISBN`
 - `ErrInvalidRating`
-- `ErrCompatibility` — page/schema/expected Goodreads behavior changed
+- `ErrCompatibility`
 - `ErrImportRejected`
 - `ErrExportFailed`
 - `ErrBusy`
 - `ErrNetwork`
 - `ErrUnsupported`
 
-Errors returned to users should include an actionable message without leaking cookies, passwords, CSRF tokens, HTML bodies containing personal data, or full CSV rows.
+Errors returned to users should include an actionable message without leaking cookies, CSRF tokens, HTML bodies containing personal data, or full CSV rows.
 
 ## Observability
 
@@ -179,7 +216,8 @@ Keep it boring:
 - no telemetry in the initial product;
 - no library-content logging by default;
 - redact session/cookie/header values unconditionally;
-- include operation names, durations, HTTP status classes, retry counts, and compatibility-stage information when debug mode is enabled.
+- include operation names, durations, HTTP status classes, retry counts, and compatibility-stage information when debug mode is enabled;
+- never log browser profile contents, CDP cookie payloads, or authentication-page form contents.
 
 ## Dependency rule
 
@@ -188,11 +226,9 @@ Transport adapters depend inward:
 ```text
 cmd -> app/domain <- mcp
           |
-          v
-      goodreads
+          +-> goodreads -> csvgr
           |
-          v
-        csvgr
+          +-> authbrowser -> session
 ```
 
 The core MUST be usable in tests without Cobra and without an MCP server.
