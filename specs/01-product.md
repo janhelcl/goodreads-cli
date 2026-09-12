@@ -21,7 +21,7 @@ The tool performs the Goodreads-specific state transition. It does not try to un
 
 ### Human CLI user
 
-Wants a tiny executable with no runtime or database. Installs it, authenticates once, and can inspect or mutate Goodreads from a shell.
+Wants a tiny executable with no runtime or database. Installs it, authenticates once through the normal Goodreads sign-in page opened in a supported local browser, and can inspect or mutate Goodreads from a shell.
 
 ### AI agent with shell access
 
@@ -56,12 +56,13 @@ Forbidden persistent state:
 
 1. Minimal installation and setup.
 2. A single cross-platform binary.
-3. Goodreads import/export as the sole library integration mechanism.
-4. Useful direct CLI UX.
-5. Deterministic agent UX (`--json`, stable errors, no prompts outside explicit auth flows).
-6. A reusable application core that can be exposed over MCP.
-7. Safe handling of Goodreads credentials/session cookies.
-8. Conservative behavior when Goodreads changes its pages or CSV formats.
+3. Goodreads import/export as the sole library-state integration mechanism.
+4. Browser-assisted authentication that never asks the CLI to collect the user's Goodreads password.
+5. Useful direct CLI UX.
+6. Deterministic agent UX (`--json`, stable errors, no prompts outside explicit auth flows).
+7. A reusable application core that can be exposed over MCP.
+8. Safe handling of Goodreads session cookies.
+9. Conservative behavior when Goodreads changes its pages or CSV formats.
 
 ## Non-goals
 
@@ -76,9 +77,11 @@ Forbidden persistent state:
 - reread event history if the CSV cannot represent it faithfully
 - Goodreads social features
 - friends/followers/groups
-- generic browser automation
+- browser automation for Goodreads library operations
 - multi-user hosted SaaS
 - automatic periodic sync
+
+A narrowly scoped browser-assisted login ceremony is explicitly allowed. It exists only to let the user authenticate on Goodreads' own page and to capture the resulting session cookies. After login, all Goodreads library operations MUST use ordinary HTTP plus import/export; no DOM automation is allowed for those operations.
 
 ## Book identity
 
@@ -143,13 +146,14 @@ A hosted multi-user account system is explicitly out of scope. One running proce
 
 A clean machine can install one binary and then:
 
-1. authenticate to Goodreads without installing a browser-automation stack;
-2. `gr library --shelf currently-reading --json` and receive the current state;
-3. `gr add <isbn>`;
-4. `gr start <isbn>`;
-5. `gr finish <isbn> --rating 4`;
-6. `gr rate <isbn> 5`;
-7. `gr review <isbn> --text ...`;
-8. run the same application operations through local MCP stdio.
+1. run `gr login`, authenticate on the real Goodreads sign-in page in a supported Chromium-family browser, and have the resulting session stored securely without giving the CLI a password;
+2. close the login browser and perform all subsequent Goodreads operations without browser automation;
+3. `gr library --shelf currently-reading --json` and receive the current state;
+4. `gr add <isbn>`;
+5. `gr start <isbn>`;
+6. `gr finish <isbn> --rating 4`;
+7. `gr rate <isbn> 5`;
+8. `gr review <isbn> --text ...`;
+9. run the same application operations through local MCP stdio.
 
 If Goodreads CSV re-import cannot reliably update existing books, this product shape must be reconsidered rather than bypassing the constraint with browser automation.
