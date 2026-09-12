@@ -4,50 +4,70 @@ This is the highest-risk boundary. Implement it narrowly and defensively.
 
 ## Allowed integration surface
 
-The adapter may use ordinary HTTPS requests needed to perform:
+The project may use exactly two Goodreads-facing mechanisms:
 
-1. Goodreads authentication/session validation;
-2. the authenticated library export workflow;
-3. the authenticated library import workflow.
+1. a **browser-assisted login ceremony** used only to let the user authenticate on Goodreads' own sign-in page and capture the resulting Goodreads session cookies;
+2. ordinary authenticated HTTPS requests needed to perform the Goodreads library export/import workflow and session validation.
 
-It MUST NOT grow into a general Goodreads scraper or unofficial book API.
+The adapter MUST NOT grow into a general Goodreads scraper or unofficial book API.
 
-Explicitly prohibited:
+Explicitly prohibited for library operations:
 
 - Playwright/Selenium/Puppeteer/WebDriver
-- headless Chromium/WebKit/Firefox
-- DOM clicking/browser automation
+- headless browser automation
+- DOM clicking to implement add/start/finish/rate/review
 - crawling Goodreads book/search/review pages for metadata
-- reverse-engineered endpoints unrelated to login/import/export
+- reverse-engineered endpoints unrelated to authentication/session validation/import/export
 
-Parsing the HTML forms/pages directly involved in login/import/export to obtain action URLs, CSRF tokens, generated-export links, or status messages is allowed and expected.
+Browser automation libraries are not required for V1. A small CDP client/library MAY be used by the dedicated authentication bootstrap component.
+
+Parsing the HTML forms/pages directly involved in import/export/session validation to obtain action URLs, CSRF tokens, generated-export links, or status messages is allowed and expected.
 
 ## Session model
 
-Use a standard Go HTTP client with a cookie jar.
+After login, use a standard Go HTTP client with a cookie jar.
 
-The adapter MUST:
+The HTTP adapter MUST:
 
 - send a stable, honest User-Agent identifying the tool/version;
 - preserve relevant cookies across requests;
 - follow normal redirects with conservative limits;
 - use HTTPS only;
 - detect redirect-to-login or login-page responses as session expiry;
-- never log cookie values or authentication form contents.
+- never log cookie values or authenticated form contents.
 
-## Authentication
+## Browser-assisted authentication
 
-V1 target is ordinary Goodreads email/password authentication performed as form HTTP requests, subject to the compatibility spike.
+V1 authentication is interactive browser-assisted session acquisition, not username/password form automation.
+
+Conceptual algorithm:
+
+1. Discover an installed supported Chromium-family browser. Initial targets: Chrome, Chromium, Edge.
+2. Create a private, isolated temporary user-data directory.
+3. Choose an ephemeral local debugging endpoint and bind it to loopback only.
+4. Launch a **visible** browser using that temporary profile and remote debugging enabled.
+5. Navigate to the current Goodreads sign-in URL.
+6. Let the user authenticate entirely in the browser using whatever flow Goodreads offers (email/password, Google, Apple, Amazon, MFA, etc.).
+7. Detect that the browser has reached authenticated Goodreads state. Do not inspect or capture password fields.
+8. Through CDP, read only cookies relevant to Goodreads authentication/session reuse.
+9. Convert them to the project's explicit `Session` representation.
+10. Validate the session using the ordinary Goodreads HTTP adapter and an authenticated import/export page.
+11. Persist the validated session through `SessionStore`.
+12. Close the launched browser and delete the temporary profile.
 
 Requirements:
 
-- discover/parse current form action and CSRF fields rather than hardcoding volatile token values;
-- password is caller-supplied transient data and is never stored;
-- after form submission, validate authenticated state using the import/export page or another minimal page already needed for this integration;
-- store only session material through the session abstraction;
-- social-login-only accounts are not automatically supported unless a non-browser flow can be implemented simply and safely.
+- MUST NOT attach to or read cookies from the user's normal browser profile;
+- MUST NOT automate credential entry or social-login interactions;
+- MUST NOT use headless login;
+- MUST NOT persist the temporary browser profile after session acquisition;
+- MUST clean up browser process/profile on success, failure, cancellation, and timeout where feasible;
+- remote-debugging access MUST be loopback-only and ephemeral;
+- captured cookies/session payloads MUST never appear in logs;
+- if no supported browser is installed, return `ErrBrowserUnavailable` with an actionable message;
+- if login is cancelled/times out, return a distinct auth error without leaving session state half-written.
 
-Do not add a browser solely to support social login.
+Implementation should keep the browser bootstrap separate from the Goodreads HTTP adapter. The latter must be testable and usable from a previously provisioned serialized session without any browser installed.
 
 ## Export workflow
 
@@ -160,7 +180,7 @@ The safest strategy is export-first preservation:
 
 For a new ISBN not present in the export, construct the minimum accepted import row. Do not fabricate bibliographic metadata if Goodreads can identify the book from ISBN alone.
 
-The compatibility spike must answer whether `Exclusive Shelf` is accepted by Goodreads import or whether status must be expressed through another accepted column (historical sample formats have differed). Code should encode the empirically verified current contract.
+The compatibility spike must answer whether `Exclusive Shelf` is accepted by Goodreads import or whether status must be expressed through another accepted column. Code should encode the empirically verified current contract.
 
 ## Idempotency and retries
 
@@ -181,8 +201,12 @@ Keep compatibility knowledge explicit and testable. Avoid selectors/regexes scat
 Suggested internal structure:
 
 ```text
+authbrowser/
+  discover.go
+  launch.go
+  session.go
+
 goodreads/
-  auth.go
   export.go
   import.go
   forms.go
