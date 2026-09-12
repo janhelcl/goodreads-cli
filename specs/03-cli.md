@@ -7,10 +7,10 @@ Examples use `gr` as the provisional binary name. See `08-decisions.md`.
 - Human mode is concise and readable.
 - `--json` is deterministic and intended for agents/scripts.
 - Commands that can mutate Goodreads MUST never infer missing semantic choices from prose.
-- Passwords/tokens MUST never be accepted as normal command-line arguments because shell history/process listings expose them.
 - Non-auth commands MUST be non-interactive. Missing required input is an error.
 - stdout is for command results; stderr is for diagnostics/progress.
 - `--json` MUST emit exactly one valid JSON value to stdout on success and no decorative prose.
+- The CLI MUST NOT ask the user to type their Goodreads password. Authentication happens on Goodreads' own page in a launched browser.
 
 ## Global flags
 
@@ -29,21 +29,46 @@ Do not add flags speculatively.
 
 ### `gr login`
 
-Interactive command that establishes a Goodreads session.
+Interactive command that establishes a Goodreads session through the user's normal Goodreads authentication experience in a supported local Chromium-family browser.
 
 ```text
 gr login
 ```
 
+Target human UX:
+
+```text
+Opening Goodreads in your browser...
+Please sign in to Goodreads.
+
+✓ Goodreads connected
+✓ Session stored securely
+```
+
 Requirements:
 
-- prompt for email/username as needed;
-- prompt for password without echo;
-- password exists only for the login request and is never persisted;
-- on success, persist authenticated session material via the session store;
-- validate the session against an authenticated Goodreads page before reporting success;
-- if the account uses an unsupported auth mechanism, fail clearly and point to the limitation;
-- `--json` may be supported only if credentials come from safe stdin/environment mechanisms documented for headless use; do not prompt and then mix prompt text with JSON stdout.
+- auto-detect a supported installed Chromium-family browser (initially Chrome, Chromium, or Edge);
+- launch it with an isolated temporary user-data directory rather than the user's normal browser profile;
+- use a visible browser, never headless mode;
+- navigate to Goodreads' sign-in page and let the user complete authentication themselves, including Google/Apple/Amazon/2FA flows if Goodreads presents them;
+- do not automate entering credentials or clicking through the authentication flow;
+- use CDP only to observe completion and obtain the resulting Goodreads cookies/session state;
+- validate the captured session through the ordinary Goodreads HTTP adapter before reporting success;
+- persist only session material via the session store;
+- close the launched browser and remove its temporary profile on success, failure, cancellation, or timeout;
+- if no supported browser is available, fail with an actionable message;
+- the CLI must never receive or store the user's Goodreads password.
+
+`--json` MAY be used with `gr login`; browser interaction remains interactive, while stdout contains only the final JSON result. Progress/instructions go to stderr.
+
+Suggested JSON success shape:
+
+```json
+{
+  "connected": true,
+  "session_valid": true
+}
+```
 
 ### `gr logout`
 
@@ -232,7 +257,7 @@ Keep these stable once released:
 ```text
 0 success
 2 CLI usage / validation error
-3 authentication/session error
+3 authentication/session/browser-login error
 4 book not found / ISBN cannot be resolved in current library context
 5 Goodreads import rejected the requested mutation
 6 network/remote service failure
@@ -256,4 +281,4 @@ The CLI should eventually document this contract explicitly:
 - prefer `--json`;
 - do not parse human-formatted tables;
 - do not call Goodreads public pages through this tool;
-- on compatibility/auth errors, surface the error rather than switching to browser automation.
+- on compatibility/auth errors, surface the error rather than switching to browser automation for Goodreads operations.
