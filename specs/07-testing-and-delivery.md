@@ -2,180 +2,253 @@
 
 ## Rule zero: prove Goodreads behavior first
 
-Several crucial behaviors are not stable/publicly documented enough to assume. Codex MUST implement and run (or prepare for the maintainer to run) a narrow live compatibility spike before building the full command surface.
+Goodreads UI behavior is not a stable public contract. Before implementing the polished command surface, run a narrow, documented compatibility spike with the Go browser stack.
 
-Do not work around failed import/export behavior with browser automation. Browser use is permitted only for the login/session-acquisition ceremony described in the specs.
+Do not infer selectors or mutation success from third-party examples alone. Do not fall back to a private API or CSV import when a UI flow fails.
 
 ## Compatibility spike
 
-Use a dedicated/non-critical Goodreads test account if possible and a handful of known books.
+Use a dedicated/non-critical Goodreads test account and a small set of known books when possible.
 
-Capture fixtures/results without committing real cookies, browser profiles, private library exports, or personally identifying data.
+Never commit real profiles, cookies, authenticated HTML, screenshots containing private data, or personal CSV exports. Convert observations into sanitized synthetic fixtures and a compatibility matrix.
 
-### A. Browser-assisted authentication
+### A. Browser/runtime viability
 
-Validate:
+Validate on each initially supported OS/browser combination where practical:
 
-- Chrome, Chromium, and Edge discovery on supported platforms where available;
-- launch with an isolated temporary user-data directory;
-- remote-debugging endpoint is loopback-only and ephemeral;
-- the browser is visible and the user can complete ordinary Goodreads authentication manually;
-- social/provider login flows can complete because the tool does not automate or intercept them;
-- authenticated Goodreads cookies can be captured through CDP without inspecting credential fields;
-- captured session can be serialized, restored into the ordinary Go HTTP client, and accepted by Goodreads;
-- expired session is detectable from the import/export page;
-- temporary browser/profile cleanup works on success, cancellation, timeout, and ordinary failure;
-- `gr logout`/local session deletion behavior is understood;
-- no Goodreads password is ever passed to CLI code or logs.
+- Rod can launch installed Chrome, Chromium, or Edge with a dedicated profile;
+- Rod-managed Chromium fallback behavior and first-run download, if enabled;
+- headed login and headless subsequent launch use the same profile safely;
+- the profile persists authentication after browser/process restart;
+- CDP/debugging is loopback-only or process-local;
+- cancellation and timeout close the browser;
+- the per-profile OS lock prevents concurrent launches;
+- the user's ordinary browser profile is never touched;
+- `--headed` runs the same operational flow as headless mode.
 
-If supported Chromium browsers cannot provide a reliable reusable Goodreads session this way, stop and report this as a product decision. Do not fall back to password collection or library-operation browser automation.
+Record browser product/version and platform in the compatibility matrix.
 
-### B. Export
+### B. Interactive login and session detection
 
 Validate:
 
-- exact request that triggers generation of a fresh export;
-- whether generation is asynchronous;
-- how completion is detected;
-- how the generated CSV URL/file is obtained;
-- observed generation time for a small library;
-- current headers and date/ISBN encodings;
-- whether a newly triggered export can be distinguished from a stale previous export.
+- the user can complete the current Goodreads login manually;
+- provider/MFA/CAPTCHA flows remain entirely user-controlled;
+- authenticated state can be detected without reading credential fields;
+- a private shelf/library page confirms the session;
+- expired sessions are distinguished from selector drift;
+- `status` works after a new process launches the saved profile;
+- `logout` removes only the dedicated profile;
+- no password, cookie, or profile contents enter logs.
 
-Save a **sanitized synthetic fixture** matching the observed schema under tests/fixtures, not a real personal export.
+If the dedicated profile cannot retain a usable Goodreads session, stop and report the blocker. Do not collect passwords or copy cookies from another profile.
 
-### C. Minimal import
+### C. Live shelf reads
 
-Determine the smallest accepted CSV/header set for adding a book by ISBN.
+Determine and record:
 
-Validate at least:
+- current library/shelf URLs and page identity markers;
+- row/card structure and stable semantic selectors;
+- pagination behavior and termination;
+- where book ID, title, author, ISBN, rating, status, custom shelves, dates, and review are visible;
+- which fields require visiting a detail/review page;
+- empty shelf and signed-out behavior;
+- any lazy loading or localization constraints.
 
-- add a new book to `to-read`;
-- add/set `currently-reading`;
-- set/read status;
-- rating;
-- review;
-- date read;
-- custom `Bookshelves` preservation if present.
+Create sanitized HTML fixtures for the minimum supported variants.
 
-Record whether status is controlled by `Exclusive Shelf`, `Bookshelves`, or another currently accepted input convention.
+### D. Exact ISBN resolution
 
-### D. Updating an existing book — blocking gate
+Validate:
 
-This is the critical product assumption.
+- ISBN-10 and ISBN-13 inputs;
+- visible Goodreads search/navigation path for an exact ISBN;
+- proof that the selected edition matches the normalized ISBN;
+- a book already in the library;
+- a book not yet in the library;
+- invalid/unresolvable ISBN;
+- multiple editions or misleading title matches;
+- a book whose Goodreads page does not expose an ISBN.
 
-Starting from a known existing book, test independently:
+If exact identity cannot be proven reliably, do not ship that mutation path.
 
-1. rating `3 -> 4`;
-2. `to-read -> currently-reading`;
-3. `currently-reading -> read` + `Date Read`;
-4. review change;
-5. preserve unrelated review when rating changes;
-6. preserve unrelated rating when status changes;
-7. preserve custom non-exclusive shelves/tags.
+### E. First verified mutation — blocking gate
 
-After each import, trigger a new export and verify the actual stored Goodreads state.
+Choose the smallest reversible/idempotent action, initially `rate` on a test book.
 
-If a one-row/small CSV import does **not** reliably update existing records, stop implementation and report. The architecture should be reconsidered with the maintainer rather than quietly sending a full-library import or adding browser automation.
+Validate:
 
-### E. Idempotency
+1. capture the current value;
+2. set a different rating through the UI;
+3. observe a completion marker;
+4. reload/revisit the authoritative view;
+5. parse and match the new rating;
+6. confirm status, review, date, and custom shelves are unchanged;
+7. repeat the same desired rating and confirm idempotency;
+8. restore the original value when safe.
 
-Repeat a successful mutation with identical desired state. Confirm it is harmless and does not create duplicate library entries or corrupt dates/shelves.
+If the adapter cannot prove both the requested change and the required preservation invariants, stop before implementing more mutations.
 
-### F. Failure behavior
+### F. Core mutation flows
 
-Test safe cases:
+Validate independently:
 
-- invalid ISBN;
-- ISBN Goodreads cannot resolve;
-- malformed CSV;
+- add a new ISBN to `to-read`;
+- ensure/change status to `currently-reading`;
+- change `currently-reading` to `read`;
+- set and verify finish date;
+- set rating;
+- set, replace, and explicitly clear review;
+- preserve unrelated rating/review/date/custom shelves;
+- already-satisfied desired state;
+- book not found and edition mismatch.
+
+After every action, perform a fresh readback. Document exact page identity, control contract, completion markers, and verification source.
+
+### G. Ambiguous and failure behavior
+
+Exercise safe failure cases:
+
+- browser unavailable;
+- browser launch failure;
+- profile already locked;
+- login cancelled/timed out;
+- browser exits unexpectedly;
 - expired session;
-- invalid CSRF;
-- network timeout after import submission if it can be simulated safely;
-- browser not installed;
-- login cancelled;
-- login timeout;
-- browser exits before session capture.
+- unexpected sign-in redirect;
+- Goodreads service-error page;
+- missing/changed selector;
+- element present but disabled/covered;
+- navigation timeout before mutation;
+- timeout immediately after a mutating click;
+- completion toast without changed state;
+- changed state without expected toast;
+- verification mismatch;
+- CAPTCHA/challenge during ordinary headless operation;
+- pagination loop;
+- invalid or unresolved ISBN.
 
-Document what response/page markers indicate each state.
+For a post-click timeout, prove that the adapter reads state once and never blindly replays the action.
+
+### H. Export download
+
+Validate:
+
+- current UI control that starts a new export;
+- synchronous/asynchronous behavior;
+- how freshness is distinguished from an older export;
+- browser download handling;
+- expected filename/content type/headers;
+- timeout and failure markers;
+- CSV validation;
+- temporary download cleanup.
+
+Create a synthetic CSV fixture; never commit a personal export.
 
 ## Test pyramid
 
 ### Unit tests
 
-High coverage for deterministic code:
+Use table-driven tests for deterministic code:
 
-- ISBN normalization/checksum
-- CSV parser/encoder
-- Excel-style ISBN cell normalization
-- dates
-- status/rating validation
-- row preservation during mutations
-- library filters
-- JSON output models
-- error mapping
-- session serialization/redaction
-- supported-browser discovery/path selection logic
-- cookie filtering/conversion from CDP representation to session representation
+- ISBN normalization/checksum;
+- status/rating/date validation;
+- library filters;
+- JSON models;
+- typed error mapping;
+- selector-contract selection;
+- URL/origin allow-list decisions;
+- parsed field normalization;
+- verification comparisons;
+- review mismatch redaction;
+- profile path validation;
+- lock behavior;
+- browser executable selection.
 
-Table-driven tests are preferred.
+### DOM/parser fixture tests
 
-### Browser-auth component tests
+Parse sanitized HTML fragments/pages without a live browser:
 
-Keep most browser-auth logic testable without live Goodreads:
+- library rows/cards;
+- pagination;
+- signed-out pages;
+- book identifiers and ISBNs;
+- ratings;
+- shelves/status;
+- review/date edit forms;
+- success/error markers;
+- export page states;
+- compatibility drift when required markers are absent.
 
-- browser executable discovery;
-- command-line construction uses an isolated user-data directory;
-- debugging is loopback-only;
-- temporary directory lifecycle/cleanup;
-- cancellation/timeout cleanup;
-- CDP cookie filtering and session conversion;
-- no attachment to default browser profiles.
+Fixtures should be minimal enough to review and must contain invented account/book data.
 
-A small opt-in integration test may launch a real local Chromium against a local test page/server to prove CDP session capture without involving Goodreads credentials.
+### Browser component tests
 
-### HTTP adapter tests
+Launch Chromium against a local `httptest.Server` or deterministic test site to exercise:
 
-Use `httptest.Server` with sanitized HTML/CSV fixtures to model:
+- dedicated profile persistence;
+- headed/headless launch options;
+- page lifecycle;
+- navigation and condition waits;
+- form interactions;
+- download interception;
+- cancellation/timeout;
+- browser cleanup;
+- operation locking;
+- unexpected-origin rejection.
 
-- authenticated session validation
-- export trigger/poll/download
-- import form/post/result
-- session expiry
-- compatibility drift
-- retries/timeouts
+These tests exercise Rod/CDP without Goodreads credentials and MAY run in a dedicated CI browser job.
 
-Tests should assert request counts so accidental polling/crawling regressions are caught.
+### Goodreads flow tests
+
+Serve synthetic Goodreads-like pages from a local test server and exercise the production adapter through the browser boundary.
+
+Cover:
+
+- authentication redirect and private-page validation;
+- paginated shelf reads;
+- exact ISBN resolution;
+- each mutation and readback verification;
+- idempotent already-satisfied state;
+- post-submit ambiguity;
+- selector alternatives;
+- export generation/download;
+- bounded request/page counts.
+
+Avoid replacing all browser interactions with mocks; at least one local end-to-end flow should execute the real Rod wrapper and DOM contracts.
 
 ### Application tests
 
-Use a fake Goodreads adapter. Assert semantic invariants:
+Use a fake semantic Goodreads adapter. Assert:
 
-- every library query exports fresh state;
-- mutation exports before preserving/updating a row;
-- only requested fields change;
-- failed import never reports success;
-- ambiguous mutation errors are not automatically retried.
+- argument validation occurs before browser work;
+- no library cache survives an invocation;
+- every mutation requires `Verified=true`;
+- verification/ambiguity failures never report success;
+- only requested semantic fields are passed;
+- operation lock and error mapping are consistent.
 
 ### CLI tests
 
-Exercise Cobra commands with injected fake service/session acquirer:
+Inject fake services and test:
 
-- args/flags
-- human output smoke tests
-- exact JSON schemas
-- stdout/stderr separation
-- exit code mapping
-- login invokes session acquisition rather than collecting credentials
-- no secret leakage
+- arguments and flags;
+- human output smoke tests;
+- exact JSON schemas;
+- stdout/stderr separation;
+- exit codes;
+- `login` is the only interactive command;
+- `--headed` propagation;
+- no secret/private-data leakage;
+- no raw import or arbitrary-browser commands.
 
 ### MCP contract tests
 
-Exercise tools against the same fake application service and verify schema/result/error mapping. No separate mutation logic is allowed.
+Run tools against the same fake application service and verify schema, result, serialization, and error mapping. No separate Goodreads logic is allowed.
 
 ### Live tests
 
-Opt-in only, never in normal CI. Require explicit environment marker and test-account session.
+Live Goodreads tests are opt-in, serial, and use a dedicated account.
 
 Example:
 
@@ -183,97 +256,111 @@ Example:
 GOODREADS_LIVE_TESTS=1 go test ./internal/goodreads -tags=live
 ```
 
-Live import/export tests should be few, serial, reversible/idempotent where possible, and polite.
+Requirements:
 
-Interactive browser-login tests are maintainer-run compatibility checks, not CI. They must never rely on stored account passwords.
+- never run in ordinary PR CI;
+- require explicit confirmation/configuration;
+- cap actions and pagination;
+- prefer reversible/idempotent mutations;
+- restore changed state when safe;
+- never store credentials in test code;
+- never print authenticated content;
+- maintainers perform headed login separately.
 
 ## CI
 
-Initial CI should include:
+Initial CI includes:
 
-- `gofmt` check
-- `go vet ./...`
-- `go test ./...`
-- race detector on Linux where runtime is reasonable
-- build on Linux/macOS/Windows
-- dependency/vulnerability scan if practical
+- `gofmt` check;
+- `go vet ./...`;
+- `go test ./...`;
+- race detector on Linux when reasonable;
+- builds on Linux, macOS, and Windows;
+- dependency/vulnerability scan where practical;
+- optional Linux Chromium job for local-server browser tests.
 
-No live Goodreads calls or interactive browsers in PR CI.
+No live Goodreads calls or interactive sign-in in PR CI.
 
 ## Implementation slices
 
-### Slice 0 — compatibility harness
+### Slice 0 — browser compatibility harness
 
-- session model/store abstraction
-- browser discovery + isolated Chromium login bootstrap
-- HTTP client/cookie jar scaffolding
-- fixture parser helpers
-- dev-only commands/tests needed to probe session validation/export/import
-- `specs` findings updated with concrete current behavior
+- narrow Rod wrapper;
+- browser resolution and launch;
+- dedicated profile path and OS lock;
+- headed/headless lifecycle;
+- local deterministic browser tests;
+- dev-only live probes;
+- compatibility matrix for supported platforms.
 
-Deliverable: written compatibility matrix proving both browser-assisted session reuse and import/export semantics. No polished CLI required.
+Deliverable: documented evidence that a profile can log in manually, persist, reopen, and reach Goodreads safely.
 
-### Slice 1 — read path
+### Slice 1 — authentication and live reads
 
-- production session store
-- polished login/status/logout
-- export workflow
-- CSV parser
-- ISBN normalization
-- `export`, `library`, `get`
-- JSON output + errors
+- polished `login`, `status`, and `logout`;
+- authenticated-state contracts;
+- shelf parser and pagination;
+- ISBN normalization/resolution;
+- `library` and `get`;
+- JSON and typed errors.
 
-### Slice 2 — first write path
+### Slice 2 — first verified write
 
-- import workflow
-- safe row transformation
-- one simple mutation (`rate` recommended)
-- post-import verification option
-- integration fixtures/tests
+- current-state capture;
+- one mutation flow, with `rate` as the initial canary;
+- mandatory readback verification;
+- ambiguity handling;
+- local-server and opt-in live tests.
 
-Only proceed if Slice 0 D-gate passed.
+Proceed only if the Slice 2 gate proves safe mutation and preservation.
 
-### Slice 3 — core UX
+### Slice 3 — core mutations
 
-- `add`
-- `start`
-- `finish`
-- `review`
-- operation locking
-- packaging polish
+- `add`;
+- `start`;
+- `finish` and finish date;
+- `review`;
+- idempotency and preservation tests;
+- headed troubleshooting UX.
 
-### Slice 4 — MCP stdio
+### Slice 4 — export and packaging
 
-- `gr mcp`
-- semantic tool schemas
-- contract tests
+- browser-driven fresh export/download;
+- safe destination handling;
+- installation/browser acquisition UX;
+- cross-platform release automation and checksums.
 
-### Slice 5 — remote/mobile enablement
+### Slice 5 — MCP stdio
 
-- `gr mcp --http`
-- remote bearer auth
-- container/deployment example (e.g. Render) if wanted
-- session provisioning for headless deployment
-- no provider-specific logic in core
+- `gr mcp`;
+- semantic tool schemas;
+- shared profile lifecycle and locking;
+- MCP contract tests.
+
+### Slice 6 — remote/mobile decision
+
+Before implementing remote HTTP MCP, write a separate decision covering profile provisioning, encrypted persistence, reauthentication, browser sandboxing, and client auth. No remote mode is implied by v0.1.
 
 ## Release criteria for v0.1
 
-- compatibility matrix documents current Goodreads behavior;
-- `gr login` uses Goodreads' own browser login UI and stores only the reusable session;
-- core read/write commands work against a real test account;
-- Goodreads remains the only library source of truth;
-- browser/CDP is used only for authentication, never library operations;
-- no local library DB;
-- secrets are not stored in plaintext by default;
-- JSON contracts and exit codes tested;
-- unit/adapter/application tests green on supported platforms;
-- installation is a single binary plus an already-installed supported Chromium-family browser for interactive login;
-- README accurately states limitations.
+- compatibility matrix records tested Goodreads/browser behavior;
+- the project remains Go and uses a narrow Rod-backed browser adapter;
+- `gr login` uses a dedicated headed profile and never handles credentials;
+- later invocations reuse that profile without touching the user's normal browser;
+- core reads load current Goodreads pages;
+- core mutations drive the web UI and return success only after readback verification;
+- no private Goodreads API or CSV-import mutation path;
+- no local library database/cache/sync queue;
+- profile locking and safe logout deletion are tested;
+- JSON contracts and exit codes are tested;
+- unit, fixture, local-browser, application, and CLI tests pass;
+- live test-account smoke checks pass for the release browser matrix;
+- README accurately states browser requirements and limitations.
 
 ## Compatibility policy
 
-Goodreads can change without notice. Treat adapter compatibility failures as expected operational errors.
+Goodreads may change without notice. Treat adapter drift as an expected operational failure.
 
-A release should prefer "Goodreads import format changed; this version cannot safely continue" over a best-effort write.
+A release should prefer “Goodreads UI changed; this version cannot safely continue at `mutation.rating`” over a guessed selector or best-effort write.
 
-When compatibility is restored, add/adjust fixtures and tests before changing production parsing.
+Restore compatibility by updating the documented contract, sanitized fixture, local flow test, and live observation together before shipping changed selectors.

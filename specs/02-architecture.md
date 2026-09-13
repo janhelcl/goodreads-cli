@@ -3,51 +3,48 @@
 ## Shape
 
 ```text
-CLI (Cobra) ─────────────┐
-                        │
-MCP transport ──────────┤
+CLI (Cobra) ────────────┐
+                       │
+MCP transport ─────────┤
+                       ▼
+                Application service
+                       │
+                       ▼
+             Goodreads browser adapter
+                 │             │
+          Rod + Chromium   DOM contracts
+                 │             │
+                 └──────┬──────┘
                         ▼
-                 Application service
-                        │
-                        ▼
-                 Goodreads adapter
-                ┌───────┴────────┐
-                │                │
-       auth/session bootstrap  import/export
-                │                │
-       temporary Chromium        │
-       login ceremony only       │
-                │                │
-                └───────┬────────┘
-                        ▼
-                    Goodreads
+                 Goodreads web UI
 ```
 
-All Goodreads behavior lives below the application boundary. CLI and MCP MUST NOT contain CSV manipulation or Goodreads HTTP details.
+All Goodreads behavior lives below the application boundary. CLI and MCP MUST NOT contain selectors, page-navigation logic, or browser-library details.
 
-The browser-assisted authentication path is a narrow bootstrap exception. It may launch a supported local Chromium-family browser with an isolated temporary profile so the user can authenticate on Goodreads' own page and the application can capture the resulting Goodreads session cookies. Once the session exists, all Goodreads library operations use ordinary HTTP plus import/export. Browser/DOM automation MUST NOT be used for library operations.
+The browser adapter launches Chromium with one dedicated CLI-owned user-data directory. Login runs headed and leaves the profile in place. Ordinary operations reuse the profile headlessly by default.
 
 ## Suggested Go package boundaries
 
-The exact names MAY change, but dependency direction must remain equivalent.
+Exact names MAY change, but dependency direction must remain equivalent.
 
 ```text
 cmd/                    Cobra wiring only
 internal/app/           use cases / application service
-internal/domain/        Book, status, update/filter/result types
-internal/goodreads/     authenticated HTTP + import/export implementation
-internal/authbrowser/   browser-assisted session acquisition only
-internal/csvgr/         Goodreads CSV parsing/encoding
-internal/session/       credential/session persistence abstraction
+internal/domain/        book, status, filter, update, and result types
+internal/goodreads/     Goodreads page flows and DOM contracts
+internal/browser/       Rod launcher, profile, page, download, and lifecycle
+internal/profile/       profile paths, locking, and deletion
 internal/mcp/           MCP tool/transport adapter
-internal/output/        human + JSON CLI rendering
+internal/output/        human and JSON CLI rendering
 ```
 
 `main.go` should do little more than invoke the root command.
 
+Rod is the initial implementation choice. Goodreads code MUST depend on a narrow local browser interface so DOM parsing and application behavior can be tested without launching Rod in every test.
+
 ## Domain model
 
-Keep it smaller than Goodreads' complete export schema.
+Keep it smaller than Goodreads' complete UI.
 
 ```go
 type ReadingStatus string
@@ -59,18 +56,18 @@ const (
 )
 
 type Book struct {
-    BookID       string
-    Title        string
-    Author       string
-    ISBN10       string
-    ISBN13       string
-    Rating       int
+    BookID        string
+    Title         string
+    Author        string
+    ISBN10        string
+    ISBN13        string
+    Rating        int
     AverageRating *float64
-    DateRead     *time.Time
-    DateAdded    *time.Time
-    Status       ReadingStatus
-    Bookshelves  []string
-    Review       string
+    DateRead      *time.Time
+    DateAdded     *time.Time
+    Status        ReadingStatus
+    Bookshelves   []string
+    Review        string
 }
 
 type BookUpdate struct {
@@ -79,20 +76,27 @@ type BookUpdate struct {
     DateRead *time.Time
     Review   *string
 }
+
+type MutationResult struct {
+    Operation string
+    Before    Book
+    After     Book
+    Changes   BookUpdate
+    Verified  bool
+}
 ```
 
-The Goodreads CSV layer may use a richer lossless row type so existing fields can be preserved across a mutation. Do not force every export column into the public domain model.
+The public model must not leak CSS selectors, Rod element handles, page URLs, or raw HTML.
 
 ## Application service
 
-The application layer exposes semantic methods and has no awareness of CLI flags or MCP schemas.
-
-Representative interface:
+The application layer exposes semantic methods and has no awareness of Cobra flags or MCP schemas.
 
 ```go
 type LibraryService interface {
     Status(ctx context.Context) (ConnectionStatus, error)
-    Export(ctx context.Context) ([]Book, error)
+    Export(ctx context.Context, destination string) (ExportResult, error)
+    Library(ctx context.Context, filter LibraryFilter) ([]Book, error)
     Get(ctx context.Context, isbn string) (Book, error)
     Add(ctx context.Context, isbn string, status ReadingStatus) (MutationResult, error)
     Start(ctx context.Context, isbn string) (MutationResult, error)
@@ -102,133 +106,242 @@ type LibraryService interface {
 }
 ```
 
-Exact API names MAY differ. Semantics from `01-product.md` and `03-cli.md` are authoritative.
+Authentication/profile lifecycle is a separate interactive boundary:
+
+```go
+type AuthService interface {
+    Login(ctx context.Context) (ConnectionStatus, error)
+    Logout(ctx context.Context) error
+    Status(ctx context.Context) (ConnectionStatus, error)
+}
+```
+
+Exact method names MAY differ. Product semantics in `01-product.md` and CLI semantics in `03-cli.md` are authoritative.
 
 ## Goodreads adapter boundary
 
-Define an interface narrow enough to fake in tests:
+Define a semantic interface narrow enough to fake:
 
 ```go
 type Goodreads interface {
     ValidateSession(ctx context.Context) error
-    ExportLibrary(ctx context.Context) (Export, error)
-    ImportLibrary(ctx context.Context, csv []byte) (ImportResult, error)
+    ListLibrary(ctx context.Context, filter LibraryFilter) ([]Book, error)
+    FindByISBN(ctx context.Context, isbn string) (Book, error)
+    Add(ctx context.Context, isbn string, status ReadingStatus) (MutationResult, error)
+    Update(ctx context.Context, book Book, change BookUpdate) (MutationResult, error)
+    DownloadExport(ctx context.Context, destination string) (ExportResult, error)
 }
 ```
 
-Authentication/session acquisition is a separate interactive boundary. A representative interface is:
+The production adapter owns navigation, page interpretation, selectors, waits, and readback verification. The application service owns argument validation and maps semantic use cases onto this interface.
+
+## Browser boundary
+
+A small wrapper keeps Rod details out of the Goodreads flow tests. The design may resemble:
 
 ```go
-type SessionAcquirer interface {
-    Acquire(ctx context.Context) (Session, error)
+type BrowserFactory interface {
+    Launch(ctx context.Context, opts LaunchOptions) (Browser, error)
+}
+
+type LaunchOptions struct {
+    ProfileDir  string
+    Headless    bool
+    DownloadDir string
+}
+
+type Browser interface {
+    NewPage(ctx context.Context, url string) (Page, error)
+    Close() error
 }
 ```
 
-The production implementation may use Chromium DevTools Protocol (CDP) only for this login ceremony. The HTTP Goodreads adapter itself MUST NOT depend on a browser runtime.
+Do not create a generic framework for arbitrary websites. Add only the operations needed by tested Goodreads flows.
 
-The application service should orchestrate:
+The launcher is responsible for:
 
-1. fresh export;
-2. locate/derive the target row;
-3. apply exactly the requested semantic change while preserving unrelated fields;
-4. encode a minimal safe import document;
-5. submit import;
-6. map the Goodreads outcome to a stable result/error.
+- locating a supported installed Chromium-family browser or a Rod-managed Chromium;
+- launching it with the dedicated user-data directory;
+- using headed mode for login and headless mode by default otherwise;
+- keeping debugging endpoints local to the process;
+- propagating cancellation and closing browser processes;
+- configuring a private temporary download directory unless the user requested a destination;
+- producing typed launch and browser-unavailable errors.
 
-## Authentication bootstrap boundary
+## Dedicated browser profile
 
-`gr login` is intentionally different from ordinary application operations:
-
-1. find a supported installed Chromium-family browser;
-2. create an isolated temporary user-data directory;
-3. launch the browser with remote debugging bound to loopback only;
-4. navigate to the Goodreads sign-in page;
-5. the user completes authentication interactively in the browser, including any social-provider/2FA flow Goodreads presents;
-6. detect authenticated Goodreads state without inspecting credential fields;
-7. read only the Goodreads cookies required for the authenticated HTTP session;
-8. validate those cookies through the normal Goodreads HTTP adapter;
-9. persist session material through `SessionStore`;
-10. close the launched browser and remove the temporary profile.
-
-Do not read cookies from the user's normal browser profile. Do not automate typing/clicking credentials. Do not use a headless browser for login.
-
-## No repository abstraction
-
-Do **not** introduce a generic `Repository` backed by SQLite/files. Goodreads is the remote source. The Goodreads adapter is sufficient.
-
-## Temporary data
-
-Prefer in-memory CSV bytes. If a temporary file is required by a library/API, use the OS temporary directory, restrictive permissions, and delete it promptly. Do not place library exports in the config directory automatically.
-
-The temporary browser profile used for authentication is ephemeral transport/authentication state. It MUST be created in a private temp location and deleted after the session has been captured and validated. It is not application state.
-
-`gr export --out file.csv` is the only normal path that intentionally persists a library CSV.
-
-## Concurrency
-
-Goodreads import/export are account-level operations and may be asynchronous. Concurrent mutations from the same local account risk races.
-
-The process MUST serialize operations that perform Goodreads import/export. For separate `gr` processes, use a lightweight per-account lock in the application config/runtime area. The lock is coordination state, not library state.
+The profile directory is persistent authentication state.
 
 Requirements:
 
-- lock acquisition has a finite timeout;
-- stale locks can be recovered safely;
-- JSON mode returns a structured busy error;
-- `library` reads MAY share the same exclusive lock initially for simplicity;
-- optimize only if real usage justifies it.
+- one profile per local Goodreads account in v0.1;
+- stored under the platform-appropriate application data/config root;
+- never point at the user's ordinary browser profile;
+- restrictive permissions where supported;
+- never inspect Chromium databases directly to derive library state;
+- never copy credentials out into a second cookie/session format;
+- delete only through explicit `gr logout` or a future reset command;
+- exclude it from backups/logging support bundles by default.
+
+The browser profile can contain cookies, local storage, cache, and other sensitive browser state. Treat the whole directory as a credential.
+
+## Login flow
+
+`gr login` is interactive:
+
+1. acquire the profile lock;
+2. create or open the dedicated profile;
+3. launch a visible browser;
+4. navigate to Goodreads sign-in;
+5. let the user complete Goodreads/provider authentication manually;
+6. wait until a known authenticated Goodreads page/state is observed;
+7. validate by opening a private library page;
+8. close the browser while retaining the profile;
+9. report success.
+
+The automation MUST NOT inspect password fields, type credentials, submit the login form for the user, or attach to an existing personal browser session.
+
+If the profile already has a valid session, `login` MAY report success without requiring another sign-in, but the browser remains headed for this command.
+
+## Live read flow
+
+A library read should:
+
+1. acquire the profile lock;
+2. launch the dedicated profile;
+3. navigate to the user's Goodreads shelf/library page;
+4. confirm authenticated state;
+5. apply server-side shelf navigation when requested;
+6. paginate only until the requested result/limit is satisfied;
+7. parse each rendered row/card into the domain model;
+8. return the live result and close the browser.
+
+Local filtering is allowed for fields already loaded in this invocation. No result is persisted as application state.
+
+`Get` MAY locate the book by navigating shelf/search UI or an exact Goodreads book page resolved from ISBN. It must reject ambiguous or mismatched results.
+
+## Mutation flow
+
+A mutation should:
+
+1. acquire the profile lock;
+2. launch the dedicated profile;
+3. resolve the exact ISBN and current library state;
+4. capture fields needed to detect unintended changes;
+5. perform the narrowest applicable UI interaction;
+6. wait for a recognized completion state;
+7. reload or revisit the affected Goodreads view;
+8. parse the resulting state;
+9. compare each requested field and required preservation invariant; and
+10. return `Verified=true` only when comparison succeeds.
+
+If completion is ambiguous, return an ambiguous/compatibility error and include safe troubleshooting guidance. Do not automatically replay the click or form submission.
+
+## Selector and page contracts
+
+Centralize compatibility knowledge by page/flow, for example:
+
+```text
+internal/goodreads/
+  contracts.go
+  auth.go
+  shelves.go
+  book.go
+  mutate.go
+  export.go
+  parse.go
+```
+
+Selector policy, in preference order:
+
+1. stable accessible role/name or associated label;
+2. semantic form attributes and stable URLs;
+3. human-visible text scoped to a known page region;
+4. narrowly scoped CSS selectors as a last resort.
+
+Avoid positional selectors, generated class names, fixed sleeps, and selectors duplicated across commands. Every flow must assert the expected page identity before acting.
+
+## No repository abstraction
+
+Do **not** introduce a generic repository backed by SQLite or files. Goodreads is the remote source. The Goodreads adapter is sufficient.
+
+## Temporary data
+
+Screenshots, HTML snapshots, traces, and downloads are disabled by default.
+
+When explicitly enabled for debugging:
+
+- write to a user-selected or clearly reported path;
+- redact or warn about private library/session content;
+- never include cookies, browser storage, or credential fields;
+- avoid automatic long-term retention.
+
+`gr export --out file.csv` is the only normal workflow that persists library data.
+
+## Concurrency
+
+Chromium user-data directories cannot be safely shared by concurrent processes, and simultaneous Goodreads mutations risk races.
+
+Every command that opens the profile MUST acquire one exclusive per-profile process lock.
+
+Requirements:
+
+- finite lock-acquisition timeout;
+- owner metadata sufficient for an actionable busy message;
+- safe stale-lock recovery using an OS lock primitive rather than timestamp guessing;
+- structured busy errors in JSON/MCP;
+- release on success, failure, cancellation, and panic where possible;
+- no read/write concurrency optimization in v0.1.
+
+The lock is coordination metadata, not library state.
 
 ## Context, cancellation, and timeouts
 
-All network operations MUST accept `context.Context`.
+All operations MUST accept `context.Context`.
 
-Have one sensible default request/operation timeout and allow global override. Export generation may require polling; total operation timeout is distinct from per-request timeout if needed.
+Use a sensible operation timeout with a global override. Login has a separate, longer interactive timeout. Navigation, element waits, and downloads must derive bounded contexts from the operation context.
 
-Authentication may need a longer user-interaction timeout than ordinary network operations. It must still be cancellable and must clean up the temporary browser/profile on cancellation.
-
-No infinite polling.
+No infinite waits or fixed sleeps as synchronization.
 
 ## Error taxonomy
 
-Use typed/sentinel application errors so CLI and MCP map failures consistently:
+Use typed application errors so CLI and MCP map failures consistently:
 
 - `ErrNotAuthenticated`
 - `ErrSessionExpired`
 - `ErrBrowserUnavailable`
+- `ErrBrowserLaunch`
 - `ErrLoginCancelled`
 - `ErrBookNotFound`
 - `ErrInvalidISBN`
 - `ErrInvalidRating`
 - `ErrCompatibility`
-- `ErrImportRejected`
+- `ErrMutationAmbiguous`
+- `ErrVerificationFailed`
 - `ErrExportFailed`
 - `ErrBusy`
 - `ErrNetwork`
 - `ErrUnsupported`
 
-Errors returned to users should include an actionable message without leaking cookies, CSRF tokens, HTML bodies containing personal data, or full CSV rows.
+User-facing errors must be actionable without exposing cookies, authenticated HTML, review text, or profile contents.
 
 ## Observability
 
-Keep it boring:
-
-- optional debug logging to stderr;
+- optional redacted debug logging to stderr;
 - no telemetry in the initial product;
 - no library-content logging by default;
-- redact session/cookie/header values unconditionally;
-- include operation names, durations, HTTP status classes, retry counts, and compatibility-stage information when debug mode is enabled;
-- never log browser profile contents, CDP cookie payloads, or authentication-page form contents.
+- operation name, duration, page stage, retry count, browser product/version, and selector contract version may be logged;
+- secrets, browser storage, cookies, form values, reviews, and raw authenticated pages must never be logged;
+- a screenshot/HTML diagnostic capture requires an explicit user flag and privacy warning.
 
 ## Dependency rule
-
-Transport adapters depend inward:
 
 ```text
 cmd -> app/domain <- mcp
           |
-          +-> goodreads -> csvgr
-          |
-          +-> authbrowser -> session
+          +-> goodreads -> browser
+                          |
+                          +-> profile
 ```
 
-The core MUST be usable in tests without Cobra and without an MCP server.
+The core MUST be testable without Cobra, MCP, or a live Goodreads account.

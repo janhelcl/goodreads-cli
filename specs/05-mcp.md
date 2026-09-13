@@ -4,35 +4,41 @@ MCP is an adapter over the application core, not a separate Goodreads implementa
 
 ## Goals
 
-- make the same semantic operations available to Claude and other MCP clients;
-- keep tool schemas small enough that agents use them correctly;
-- preserve Goodreads as the source of truth;
-- support local stdio first;
-- leave a straightforward path to a private remote HTTP MCP instance for mobile clients.
+- expose the same semantic operations to MCP clients;
+- keep tool schemas small and explicit;
+- preserve Goodreads as the only source of truth;
+- use the same dedicated browser profile and verification rules as the CLI;
+- support local stdio first.
 
-## Commands
-
-### Local stdio
+## Local stdio command
 
 ```text
 gr mcp
 ```
 
-Runs an MCP server over stdio. No logs or progress may be written to stdout; diagnostics go to stderr.
+Runs an MCP server over stdio. Protocol messages are the only stdout content; diagnostics go to stderr.
 
-### Remote HTTP (later slice)
+The server may keep one browser process open for its lifetime to reduce launch overhead, but it MUST:
 
-```text
-gr mcp --http :8080
-```
+- use the same dedicated profile;
+- serialize all tool calls;
+- load Goodreads state live for every tool invocation;
+- close the browser cleanly;
+- avoid retaining a library cache between calls.
 
-Runs the same server over the MCP-recommended HTTP transport supported by the chosen Go SDK.
+If another CLI/MCP process holds the profile lock, return the same structured busy error as the CLI.
 
-Remote HTTP is single-account-per-process. This project does not implement a multi-user Goodreads SaaS.
+## Authentication
+
+The local MCP server uses the profile created by `gr login`.
+
+It MUST NOT expose login as an MCP tool in v0.1 because login requires a local visible user-controlled browser. If the profile is missing or expired, tools return an actionable authentication error directing the user to run `gr login`.
+
+MCP tools never return profile paths, cookies, browser storage, raw HTML, or credentials.
 
 ## MCP tools
 
-Keep the tool surface semantic and close to the CLI/application API.
+Keep the surface semantic and close to the application API.
 
 ### `get_library`
 
@@ -46,7 +52,7 @@ Input:
 }
 ```
 
-All fields optional. Always based on a fresh Goodreads export.
+All fields are optional. Results come from Goodreads pages loaded for that tool call.
 
 ### `get_book`
 
@@ -55,6 +61,8 @@ Input:
 ```json
 {"isbn": "9781603580557"}
 ```
+
+The result requires an exact normalized ISBN match.
 
 ### `add_book`
 
@@ -67,7 +75,7 @@ Input:
 }
 ```
 
-`status` defaults to `to-read` only if MCP schema/default semantics make that obvious to clients.
+`status` defaults to `to-read` only if the tool schema makes that default unambiguous to clients.
 
 ### `start_reading`
 
@@ -85,7 +93,7 @@ Input:
 }
 ```
 
-`date` and `rating` optional according to the same semantics as CLI. Prefer requiring explicit `date` from remote agents if server timezone would make "today" ambiguous; see implementation note below.
+`date` and `rating` follow the same semantics as the CLI. MCP descriptions should encourage an explicit date because the host timezone may differ from the user.
 
 ### `rate_book`
 
@@ -105,15 +113,17 @@ Input:
 }
 ```
 
-To clear, use an explicit boolean/nullable field rather than conflating missing input with an empty review.
+Clearing a review uses an explicit `clear: true` field or a distinct schema branch. Missing input never means clear.
 
 ## Book discovery is not an MCP tool
 
-Do not add `search_goodreads`, `get_average_rating`, recommendation tools, or Goodreads public-page scraping. MCP clients with web/search capability should resolve titles and public information externally, then call these tools with an ISBN.
+Do not add `search_goodreads`, average-rating, recommendation, or public-page scraping tools. MCP clients with web/search capability should resolve an ISBN externally, then call these private-library tools.
+
+The adapter may use Goodreads' visible search UI internally only to resolve and verify the supplied exact ISBN.
 
 ## Results
 
-Return compact structured data. The application result type should be reused/mapped directly; do not generate conversational prose in the server.
+Return compact structured data and map the application result directly. Do not generate conversational prose inside the server.
 
 Example mutation result:
 
@@ -122,40 +132,52 @@ Example mutation result:
   "ok": true,
   "operation": "finish",
   "isbn13": "9781603580557",
+  "book_id": "12345",
   "title": "Thinking in Systems",
   "changes": {
     "status": "read",
     "rating": 4,
     "date_read": "2026-09-12"
   },
-  "verified": false
+  "verified": true
 }
 ```
 
-MCP errors map from typed application errors with safe, actionable messages.
+A successful mutation result always has `verified: true`. Ambiguous or mismatched state is a tool error.
 
-## Authentication to Goodreads
-
-Local stdio uses the same local session store as CLI.
-
-Remote/headless deployments may load serialized Goodreads session material from an explicit secret environment/file configuration described in `06-security-and-config.md`. The process represents one Goodreads account.
-
-MCP-level client authentication for remote HTTP is separate from Goodreads authentication. A remote server MUST NOT be exposed unauthenticated. Initial remote mode may use a static bearer token supplied as a deployment secret; full OAuth/multi-user account management is out of scope.
+Errors map from typed application errors and include safe, actionable messages. Compatibility errors may include the stable flow stage but not selectors, raw HTML, or private field contents.
 
 ## Date/time semantics
 
-CLI `finish` can default date to the local machine's current date.
+CLI `finish` may default to the local machine's date.
 
-For remote MCP, server timezone may differ from the user's phone. Therefore the MCP tool SHOULD require/strongly encourage an explicit ISO date for `finish_reading`. If omitted, document that server local date is used. A future client-timezone setting is preferable to inferring locale.
+MCP clients SHOULD send an explicit ISO date. If omitted, the server's local calendar date is used and that behavior must be stated in the tool description and result.
 
 ## Write safety
 
-MCP descriptions should clearly state which tools mutate Goodreads. The server does not implement an extra confirmation protocol; confirmation/approval is a client concern.
+Tool descriptions MUST:
 
-Mutation tool descriptions MUST say exactly what fields change and that other library fields are preserved.
+- identify mutating tools;
+- state exactly which fields change;
+- state that unrelated fields are preserved;
+- explain that Goodreads is read back before success;
+- avoid encouraging blind retries after ambiguity.
 
-## Deployment philosophy
+The server does not add a separate confirmation protocol; approval is the MCP client's responsibility.
 
-`gr mcp --http` exists so the same binary can be deployed to a small host such as Render and then used from a mobile MCP client. Do not add deployment-provider-specific logic to the core application.
+## Remote HTTP transport
 
-Optional future assets (`render.yaml`, container image, install docs) belong at the packaging/deployment edge.
+Remote HTTP MCP is deferred beyond v0.1.
+
+A remote design must answer, before implementation:
+
+- how a dedicated Chromium profile is provisioned and encrypted;
+- whether the host can run the supported browser reliably;
+- how interactive reauthentication occurs without exposing remote debugging;
+- how one account/process is isolated;
+- how MCP client authentication and HTTPS are enforced;
+- how browser/profile persistence survives deployments safely.
+
+Do not support serialized-cookie environment variables as a shortcut around the browser-owned profile model. Do not add provider-specific deployment logic to the application core.
+
+If remote mode is approved later, it remains single-account-per-process and uses the same application service, live reads, exclusive browser access, and mandatory mutation verification.

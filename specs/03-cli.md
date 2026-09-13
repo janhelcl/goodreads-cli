@@ -5,31 +5,36 @@ Examples use `gr` as the provisional binary name. See `08-decisions.md`.
 ## UX rules
 
 - Human mode is concise and readable.
-- `--json` is deterministic and intended for agents/scripts.
-- Commands that can mutate Goodreads MUST never infer missing semantic choices from prose.
-- Non-auth commands MUST be non-interactive. Missing required input is an error.
-- stdout is for command results; stderr is for diagnostics/progress.
-- `--json` MUST emit exactly one valid JSON value to stdout on success and no decorative prose.
-- The CLI MUST NOT ask the user to type their Goodreads password. Authentication happens on Goodreads' own page in a launched browser.
+- `--json` is deterministic and intended for agents and scripts.
+- Mutating commands MUST never infer missing semantic choices from prose.
+- Commands other than `login` MUST be non-interactive.
+- stdout is for results; stderr is for diagnostics and progress.
+- `--json` emits exactly one valid JSON value to stdout on success and no decorative prose.
+- The CLI MUST NOT ask for or accept a Goodreads password.
+- Browser windows are hidden by default except during `login` or when `--headed` is explicit.
+- A successful mutation means Goodreads state was read back and verified.
 
 ## Global flags
 
 Initial set:
 
 ```text
---json             machine-readable output
---debug            redacted diagnostic logging to stderr
---timeout DURATION total operation timeout
---no-color         disable terminal colors in human mode
+--json              machine-readable output
+--debug             redacted diagnostic logging to stderr
+--timeout DURATION  total operation timeout
+--headed            show the automated browser window
+--no-color          disable terminal colors in human mode
 ```
 
-Do not add flags speculatively.
+`--headed` is a diagnostic/visibility switch, not a different implementation path. It has no effect on `login`, which is always headed.
+
+A browser executable override MAY be introduced through configuration or a global `--browser PATH` flag once the compatibility spike shows it is needed. Do not expose the profile directory as a routine flag in v0.1.
 
 ## Authentication commands
 
 ### `gr login`
 
-Interactive command that establishes a Goodreads session through the user's normal Goodreads authentication experience in a supported local Chromium-family browser.
+Interactive command that establishes a Goodreads session in the CLI-owned Chromium profile.
 
 ```text
 gr login
@@ -38,30 +43,26 @@ gr login
 Target human UX:
 
 ```text
-Opening Goodreads in your browser...
-Please sign in to Goodreads.
+Opening Goodreads in a dedicated browser...
+Complete sign-in on Goodreads, then return here.
 
 ✓ Goodreads connected
-✓ Session stored securely
 ```
 
 Requirements:
 
-- auto-detect a supported installed Chromium-family browser (initially Chrome, Chromium, or Edge);
-- launch it with an isolated temporary user-data directory rather than the user's normal browser profile;
-- use a visible browser, never headless mode;
-- navigate to Goodreads' sign-in page and let the user complete authentication themselves, including Google/Apple/Amazon/2FA flows if Goodreads presents them;
-- do not automate entering credentials or clicking through the authentication flow;
-- use CDP only to observe completion and obtain the resulting Goodreads cookies/session state;
-- validate the captured session through the ordinary Goodreads HTTP adapter before reporting success;
-- persist only session material via the session store;
-- close the launched browser and remove its temporary profile on success, failure, cancellation, or timeout;
-- if no supported browser is available, fail with an actionable message;
-- the CLI must never receive or store the user's Goodreads password.
+- launch a supported installed Chromium-family browser or a Rod-managed Chromium;
+- always use the dedicated profile, never the user's normal browser profile;
+- use a visible browser;
+- navigate to Goodreads sign-in;
+- let the user complete email/password, Amazon/social-provider, MFA, and challenge flows themselves;
+- do not inspect, collect, type, or submit credentials;
+- detect authenticated Goodreads state and validate access to a private library page;
+- retain the dedicated profile for later commands;
+- close the launched browser on success, failure, cancellation, or timeout;
+- fail actionably if no usable browser is available.
 
-`--json` MAY be used with `gr login`; browser interaction remains interactive, while stdout contains only the final JSON result. Progress/instructions go to stderr.
-
-Suggested JSON success shape:
+`--json` is allowed. Interaction stays in the browser, progress goes to stderr, and stdout contains only the final result.
 
 ```json
 {
@@ -72,11 +73,24 @@ Suggested JSON success shape:
 
 ### `gr logout`
 
-Deletes locally stored session material. It need not invalidate all Goodreads sessions server-side unless a reliable logout endpoint is deliberately supported.
+```text
+gr logout
+```
+
+Closes any browser process started by the command and deletes the dedicated profile after confirmation of the exact path owned by this application. It does not promise to invalidate other Goodreads sessions.
+
+The command MUST be safe to repeat. In JSON mode:
+
+```json
+{
+  "connected": false,
+  "profile_removed": true
+}
+```
 
 ### `gr status`
 
-Checks whether stored session material exists and whether Goodreads accepts it.
+Launches the dedicated profile, visits a lightweight authenticated Goodreads page, and reports whether the session is accepted.
 
 Human example:
 
@@ -93,26 +107,13 @@ JSON shape:
 }
 ```
 
-Do not expose cookie/session details.
+Do not expose profile paths, cookies, or session details in ordinary output.
 
 ## Library/read commands
 
-### `gr export`
-
-Explicit escape hatch to download the current raw Goodreads export.
-
-```text
-gr export --out goodreads_library_export.csv
-```
-
-- always fetch a new export;
-- refuse to overwrite an existing path unless `--force` is provided;
-- without `--out`, write CSV to stdout only when not using `--json`;
-- `--json` requires `--out` and returns metadata about the saved export, not CSV embedded in JSON.
-
 ### `gr library`
 
-Fetches a new export and prints parsed books.
+Reads the user's live Goodreads shelf pages.
 
 ```text
 gr library
@@ -127,13 +128,14 @@ Initial filters:
 - `--rating 1..5`
 - `--limit N`
 
-Filtering happens locally over that invocation's fresh export.
+Shelf filtering SHOULD be applied through Goodreads navigation where practical. Other filtering may happen over rows loaded during that invocation. `--limit` bounds returned results and browser pagination; it must not imply a persistent cache.
 
-Human output should be compact table/text. JSON output is an array of stable book objects:
+Human output should be compact table/text. JSON is an array of stable book objects:
 
 ```json
 [
   {
+    "book_id": "12345",
     "title": "Thinking in Systems",
     "author": "Donella H. Meadows",
     "isbn10": "1603580557",
@@ -146,25 +148,49 @@ Human output should be compact table/text. JSON output is an array of stable boo
 ]
 ```
 
-Dates are ISO `YYYY-MM-DD`; missing dates are `null`.
+Dates are ISO `YYYY-MM-DD`; missing dates are `null`. Fields Goodreads does not render in the traversed view may be absent or `null` only if the JSON schema documents that behavior.
 
 ### `gr get <isbn>`
 
-Convenience query over a fresh export. Returns one library entry or not-found.
+Returns one live library entry or not-found.
+
+```text
+gr get 9781603580557
+```
+
+It MUST verify an exact normalized ISBN before returning a result. Title-only matches are insufficient.
+
+### `gr export`
+
+Explicit escape hatch that requests/downloads the current Goodreads CSV export through the web UI.
+
+```text
+gr export --out goodreads_library_export.csv
+```
+
+Requirements:
+
+- initiate a new export or prove the downloaded file belongs to this invocation;
+- wait with bounded polling for Goodreads to prepare it;
+- refuse to overwrite an existing destination unless `--force` is present;
+- without `--out`, write CSV to stdout only in human mode;
+- with `--json`, require `--out` and return safe metadata, not CSV content;
+- never use the export as hidden application state or as the normal read/mutation path.
 
 ## Mutation commands
 
 All mutation commands:
 
-1. validate local arguments before network writes;
-2. acquire the account operation lock;
-3. fetch a fresh export;
-4. preserve fields not explicitly being changed;
-5. build the smallest compatible import document;
-6. submit it;
-7. report the Goodreads import outcome.
+1. validate local arguments before launching the browser;
+2. acquire the profile lock;
+3. load current Goodreads state needed for preservation checks;
+4. resolve and verify the exact ISBN;
+5. perform the narrowest Goodreads UI action;
+6. wait for a recognized completion state;
+7. reload/read back the affected state; and
+8. report success only when requested fields match.
 
-Do not silently retry a mutation after an ambiguous response; avoid duplicate or unintended state transitions.
+A command MUST NOT automatically retry an ambiguous form submission or click. It may safely re-read state and return either verified success or an ambiguity error.
 
 ### `gr add <isbn>`
 
@@ -173,10 +199,10 @@ gr add 9781603580557
 gr add 9781603580557 --shelf currently-reading
 ```
 
-- default status: `to-read`;
-- initial `--shelf` accepts only the three core statuses;
-- if the book already exists, this behaves as an idempotent ensure-status operation **only if** the compatibility spike proves Goodreads import updates existing books reliably;
-- never erase rating/review/date/custom shelves as a side effect.
+- default status is `to-read`;
+- `--shelf` accepts only the three core statuses;
+- if the book already exists, the operation is an idempotent ensure-status action;
+- rating, review, custom shelves, and dates MUST remain unchanged unless Goodreads itself necessarily normalizes them and the adapter reports that incompatibility.
 
 ### `gr start <isbn>`
 
@@ -186,7 +212,7 @@ gr start 9781603580557
 
 Sets status to `currently-reading` and preserves other user state.
 
-It does **not** promise a started-reading date because current Goodreads export data does not expose one reliably.
+It does not promise a started-reading date in v0.1.
 
 ### `gr finish <isbn>`
 
@@ -197,10 +223,11 @@ gr finish 9781603580557 --date 2026-09-11 --rating 4
 ```
 
 - status becomes `read`;
-- `--date` format is `YYYY-MM-DD`;
+- `--date` is `YYYY-MM-DD`;
 - omitted `--date` means the machine's current local calendar date;
 - optional `--rating` is 1..5;
-- existing review/custom shelves are preserved.
+- existing review and custom shelves are preserved;
+- the compatibility spike must establish the Goodreads UI needed to set the finish date reliably.
 
 ### `gr rate <isbn> <rating>`
 
@@ -208,7 +235,7 @@ gr finish 9781603580557 --date 2026-09-11 --rating 4
 gr rate 9781603580557 5
 ```
 
-Changes only `My Rating`.
+Changes only the user's rating.
 
 ### `gr review <isbn>`
 
@@ -218,19 +245,17 @@ gr review 9781603580557 --file review.md
 gr review 9781603580557 --clear
 ```
 
-Exactly one of `--text`, `--file`, or `--clear` is required.
-
-Changes only the review field.
+Exactly one of `--text`, `--file`, or `--clear` is required. The command changes only the review field.
 
 ## Mutation result
 
-Human output should state what Goodreads accepted, e.g.:
+Human output states the verified result:
 
 ```text
 Updated Thinking in Systems — read, 4/5, finished 2026-09-12
 ```
 
-JSON uses a stable result object:
+JSON uses a stable object:
 
 ```json
 {
@@ -244,11 +269,11 @@ JSON uses a stable result object:
     "rating": 4,
     "date_read": "2026-09-12"
   },
-  "verified": false
+  "verified": true
 }
 ```
 
-`verified` means a post-import re-export confirmed the state, not merely that the import request was accepted. Default verification behavior is tracked in `08-decisions.md`.
+`verified` MUST be `true` for a successful mutation. An unverified or mismatched outcome is an error, not a successful result with `verified=false`.
 
 ## Exit codes
 
@@ -256,29 +281,38 @@ Keep these stable once released:
 
 ```text
 0 success
-2 CLI usage / validation error
-3 authentication/session/browser-login error
-4 book not found / ISBN cannot be resolved in current library context
-5 Goodreads import rejected the requested mutation
-6 network/remote service failure
-7 Goodreads compatibility/schema drift
-8 operation busy/locked
 1 unexpected internal error
+2 CLI usage / validation error
+3 authentication, session, or browser-launch error
+4 book not found / ISBN not resolved
+5 mutation ambiguous or verification failed
+6 network / remote service failure
+7 Goodreads UI compatibility drift
+8 operation busy / profile locked
+9 browser unavailable or unsupported
 ```
 
-MCP maps the same application error taxonomy rather than shell exit codes.
+MCP maps the same application error taxonomy rather than shell codes.
 
-## Raw import command
+## Browser diagnostics
 
-Do **not** expose a general `gr import arbitrary.csv` in the initial public interface. It bypasses semantic safety and is unnecessary for the target use case. A hidden/dev-only command MAY exist for compatibility testing.
+When a compatibility failure occurs, the error SHOULD suggest rerunning the same command with `--headed --debug`.
+
+A future explicit diagnostic flag may capture a screenshot or sanitized DOM snapshot. It must be opt-in, warn that Goodreads pages contain personal data, and never write cookies or credential fields.
+
+## Raw browser or import commands
+
+Do not expose general-purpose commands that execute arbitrary JavaScript, selectors, URLs, or CSV imports. They bypass the semantic safety boundary.
+
+Dev-only compatibility probes MAY exist behind build tags or an explicitly unstable command namespace and MUST NOT be enabled in release builds by default.
 
 ## Agent guidance
 
-The CLI should eventually document this contract explicitly:
+The CLI documentation should tell agents:
 
-- use web/public sources to identify the intended book and ISBN;
+- resolve the intended book and ISBN using public sources before invoking this tool;
 - use `gr` only for the user's private Goodreads library state;
 - prefer `--json`;
-- do not parse human-formatted tables;
-- do not call Goodreads public pages through this tool;
-- on compatibility/auth errors, surface the error rather than switching to browser automation for Goodreads operations.
+- never parse human tables when JSON is available;
+- treat auth, compatibility, ambiguity, and verification errors as terminal for that action;
+- never compensate by scripting Goodreads separately or replaying a failed mutation.

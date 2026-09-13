@@ -1,111 +1,140 @@
 # Decisions, assumptions, and open questions
 
-This file distinguishes deliberate product choices from facts that still need to be measured against Goodreads.
+This file separates deliberate product choices from Goodreads/browser behavior that must be measured.
 
 ## Confirmed decisions
 
-These come from the agreed design and should not be reopened during routine implementation.
+These choices should not be reopened during routine implementation.
 
 | Area | Decision |
 |---|---|
 | Language | Go |
 | CLI framework | Cobra |
+| Browser automation | Rod behind a narrow local interface |
 | Product core | CLI/application library first |
 | Source of truth | Goodreads only |
-| Local library DB | None |
-| Sync engine | None |
-| Goodreads library integration | Authenticated import/export over ordinary HTTP |
-| Authentication | Browser-assisted login using a temporary isolated Chromium-family profile; capture reusable Goodreads session cookies via CDP |
-| Password handling | CLI never collects or stores the user's Goodreads password |
-| Browser automation | Allowed only for authentication/session acquisition; forbidden for Goodreads library operations |
-| Supported login browsers V1 | Chrome, Chromium, Edge where discoverable |
-| Public book metadata/search | Out of scope; caller/AI resolves ISBN via web |
+| Local library DB/cache | None |
+| Sync engine/queue | None |
+| Goodreads integration | Browser automation of the ordinary web UI for reads and writes |
+| Authentication | Manual login in a visible, dedicated persistent Chromium profile |
+| Password handling | CLI never collects, types, stores, or logs credentials |
+| Session model | Browser-owned profile; no copied cookie jar or serialized-session format |
+| Normal operation mode | Headless by default; `--headed` runs the same flow visibly |
+| Mutation success | Mandatory Goodreads readback; successful results have `verified=true` |
+| Private Goodreads API | Prohibited |
+| CSV | Explicit export only; not normal read/write state transport |
+| Public book metadata/search | Out of scope; caller resolves an ISBN |
 | Mutation identity | ISBN-10/ISBN-13 |
-| Read freshness | Fresh Goodreads export per query invocation |
-| MCP | Thin adapter over same application core |
-| Local MCP | stdio via same binary |
-| Remote MCP | Later HTTP transport via same binary |
-| Hosted model | Single Goodreads account per process/deployment; no multi-user SaaS |
-| Distribution goal | Single cross-platform binary |
+| Read freshness | Goodreads pages loaded during each invocation |
+| Concurrency | Exclusive OS-backed lock per browser profile |
+| MCP | Thin adapter over the same application core |
+| Local MCP | stdio via the same binary |
+| Remote MCP | Deferred pending a browser/profile security design |
+| Hosted model | No multi-user SaaS |
 | Telemetry | None by default |
 
-## Provisional defaults that Codex may implement
+## Superseded decisions
 
-These are low-cost choices and do not need to block the compatibility spike.
+The following earlier design is no longer authoritative:
+
+- temporary browser profile used only for login;
+- extracting Goodreads cookies into a Go HTTP client/keychain;
+- ordinary HTTP import/export as the library boundary;
+- CSV re-import for mutations;
+- browser automation prohibited after login;
+- optional post-import verification.
+
+Current specs replace that design comprehensively. Historical git commits may still describe it but implementation must follow this file and the other current specs.
+
+## Provisional defaults
+
+These defaults may be implemented without blocking on product discussion, but the compatibility spike can refine them.
 
 ### D1 — binary name
 
-Use `gr` in command examples and as the initial built binary **unless a clear packaging/path collision is found**. Repository/module remains `goodreads-cli`.
+Use `gr` in examples and initial builds unless a clear packaging/path collision appears. The repository/module remains `goodreads-cli`.
 
-If `gr` proves too collision-prone before first public release, rename before compatibility guarantees are published.
+If `gr` is too collision-prone, rename before public compatibility guarantees are published.
 
-### D2 — mutation verification
+### D2 — browser selection
 
-Default mutation success means Goodreads explicitly reports the import accepted/completed, with `verified=false` unless a subsequent export was performed.
+Resolution order:
 
-Provide a future/global `--verify` option or verification mode that re-exports and confirms requested fields. During compatibility/live tests, always verify.
+1. explicit configured executable;
+2. installed Chrome, Chromium, or Edge;
+3. Rod-managed Chromium if first-run download and compatibility prove acceptable.
 
-Rationale: exporting can be asynchronous and expensive enough that doing it both before and after every mutation may make the UX unnecessarily slow. The application architecture must nevertheless support verification.
+Support Firefox/Safari is deferred. Pin the Rod version and document the Chromium strategy.
 
-### D3 — custom shelves
+### D3 — persistent profile
 
-Core status only (`to-read`, `currently-reading`, `read`) in the first slice. Preserve custom shelves when mutating an existing row, but do not expose custom-shelf editing until import semantics are proven.
+Use one CLI-owned profile under the platform application-data root.
 
-### D4 — secure session persistence
+The profile persists until `gr logout`, contains browser-managed authentication state, and is protected by restrictive permissions plus an exclusive OS lock. Do not extract cookies into a keychain or support a plaintext session fallback.
 
-Use OS credential/keychain storage for local sessions. Headless/remote deployments use an explicit secret environment variable/file. Do not silently persist cookies in plaintext.
+### D4 — browser visibility
 
-Library choice is an implementation detail; prefer a maintained cross-platform package with minimal complexity.
+`gr login` is always headed. All other commands are headless by default and accept `--headed` for observation/troubleshooting.
 
-### D5 — browser-assisted login implementation
+Headed and headless modes must execute the same Goodreads flow and verification logic.
 
-Authentication coverage is now resolved: V1 should use a supported local Chromium-family browser rather than implementing Goodreads email/password HTTP login.
+### D5 — mutation verification
 
-Implementation defaults:
+Readback verification is mandatory, not optional.
 
-- auto-detect Chrome, Chromium, or Edge;
-- launch a visible browser with a dedicated temporary profile;
-- remote debugging/CDP bound to loopback only;
-- user performs the login manually on Goodreads/provider pages;
-- no credential typing/click automation;
-- capture only reusable Goodreads session cookies/state;
-- validate the captured session through the normal HTTP adapter;
-- store via the session abstraction/keychain;
-- close the launched browser and remove the temporary profile after capture;
-- no fallback that asks the CLI for a password;
-- no use of browser/CDP for add/start/finish/rate/review/import/export.
+A mutation may return verified success when the desired state was already present without clicking. Once a mutating action has been attempted, an ambiguous response is followed by one fresh state read, never a blind replay.
 
-Supporting Firefox/Safari is explicitly deferred. If Chromium-family login cannot reliably yield a reusable Goodreads HTTP session, stop and revisit the product decision rather than expanding browser automation.
+### D6 — custom shelves
 
-## Blocking empirical questions — not product decisions
+Core editing supports only `to-read`, `currently-reading`, and `read` initially.
 
-Codex must answer these through the compatibility spike in `07-testing-and-delivery.md`:
+Existing custom shelves should be displayed/preserved when the UI exposes them. Editing custom shelves is deferred until explicitly specified and tested.
 
-1. **Browser login/session reuse:** can a temporary Chrome/Chromium/Edge profile complete the current Goodreads login flow and yield cookies that can be serialized/restored into the Go HTTP client and accepted by the import/export pages?
-2. **Fresh export:** what exact current workflow triggers a new export, how is completion detected, and can stale exports be distinguished?
-3. **Minimal import:** what headers/fields does Goodreads currently accept for a one-book import?
-4. **Existing-book updates:** does re-importing a one-row CSV reliably update rating, status, date read, and review for a book already in the library?
-5. **Status encoding:** does current import honor `Exclusive Shelf`, `Bookshelves`, or another field for `to-read` / `currently-reading` / `read`?
-6. **Preservation:** can a narrow mutation preserve unrelated rating/review/custom-shelf state?
-7. **Import completion:** how does Goodreads signal queued, completed, rejected, or partially failed imports?
-8. **Session lifetime:** which Goodreads cookies must be persisted, how long do they remain valid, and how is expiry represented?
+### D7 — MCP deployment
 
-If #1 fails, revisit authentication before proceeding. If #4 or #6 fails, stop: the central import/export mutation design is invalid and should be discussed before implementation continues.
+Local stdio is in scope. Remote HTTP is not a v0.1 deliverable.
 
-## Known CSV limitations accepted by design
+Do not support cookie environment variables or copied profile archives as an undocumented remote-provisioning shortcut.
 
-Current/historical Goodreads exports expose a useful but incomplete model. In particular, started-reading date and rich reread history are not part of the stable export contract we are targeting.
+## Blocking empirical questions
 
-Therefore:
+The compatibility spike in `07-testing-and-delivery.md` must answer:
 
-- `start` promises status change, not recording a start timestamp;
-- `finish` can use `Date Read` if verified by compatibility tests;
-- reread event history is out of scope;
-- do not introduce a local DB to compensate for missing Goodreads CSV fields.
+1. **Browser matrix:** which Chrome/Chromium/Edge versions and platforms work with the selected Rod release and profile strategy?
+2. **Managed browser:** is Rod-managed Chromium a reliable, safe fallback, and what is its first-run installation cost?
+3. **Login persistence:** can manual login in the dedicated headed profile be reused headlessly after restart?
+4. **Authentication detection:** which combined page markers distinguish valid, expired, challenged, and incompatible states?
+5. **Shelf reads:** which Goodreads pages/selectors provide stable live library data and pagination?
+6. **Field visibility:** where are ISBN, rating, status, review, custom shelves, and finish date visible for parsing and verification?
+7. **Exact identity:** can the adapter prove an exact ISBN match for both existing and new books?
+8. **Status mutation:** which UI control reliably sets each core exclusive shelf?
+9. **Rating mutation:** which control and readback source reliably set/verify a numeric rating?
+10. **Review mutation:** which editor and readback source preserve Unicode and support explicit clearing?
+11. **Finish date:** can the ordinary UI set and expose a requested finish date reliably?
+12. **Preservation:** can each narrow UI operation prove unrelated rating/review/date/custom-shelf fields remain unchanged?
+13. **Ambiguity:** what page markers and readback behavior distinguish failure, delayed success, and selector drift after a click?
+14. **Export:** how does the UI request a fresh CSV and how can the resulting browser download be tied to the invocation?
+15. **Headless challenges:** does Goodreads present challenges in headless mode that require rerunning headed?
 
-## What Codex should do when it encounters ambiguity
+If #3 fails, stop and revisit the profile/browser approach. If #7 or #12 fails for an operation, do not ship that operation. If headless execution is unreliable but headed works, surface that result for a product decision rather than using evasion techniques.
 
-1. Check these specs first.
-2. If it is an empirical Goodreads behavior, add/extend a compatibility test or dev probe; do not guess.
-3. If it changes the product invariants above, stop and surface the decision.
-4. Prefer a smaller explicit limitation over a hidden workaround.
+## Accepted initial limitations
+
+- ISBN-first mutations exclude books whose edition cannot be verified.
+- Start date and reread history are not promised.
+- Custom-shelf editing is absent.
+- Goodreads social features are absent.
+- Headless operation depends on Goodreads accepting the supported browser.
+- Login and challenges require a local display and user interaction.
+- UI changes may temporarily disable commands until contracts and fixtures are updated.
+- Remote/mobile MCP is deferred.
+
+Do not introduce a local database or undocumented API to compensate for these limitations.
+
+## Handling ambiguity
+
+1. Check the current specs.
+2. If the question is empirical Goodreads/browser behavior, extend the compatibility probe and sanitized fixture.
+3. If it changes a confirmed decision, stop and surface the product tradeoff.
+4. Prefer an explicit unsupported error over a hidden workaround.
+5. Never bypass challenges, weaken browser security silently, or replay an ambiguous mutation.

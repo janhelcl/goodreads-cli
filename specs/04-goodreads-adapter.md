@@ -1,231 +1,298 @@
-# Goodreads adapter specification
+# Goodreads browser-adapter specification
 
-This is the highest-risk boundary. Implement it narrowly and defensively.
+This is the highest-risk boundary. Implement it narrowly, visibly, and defensively.
 
 ## Allowed integration surface
 
-The project may use exactly two Goodreads-facing mechanisms:
+The product uses browser automation to drive Goodreads' ordinary web UI for:
 
-1. a **browser-assisted login ceremony** used only to let the user authenticate on Goodreads' own sign-in page and capture the resulting Goodreads session cookies;
-2. ordinary authenticated HTTPS requests needed to perform the Goodreads library export/import workflow and session validation.
+- authentication-state validation;
+- shelf/library reads;
+- exact-ISBN book resolution;
+- add/start/finish/rate/review mutations;
+- explicit CSV export requests and downloads.
 
-The adapter MUST NOT grow into a general Goodreads scraper or unofficial book API.
+The initial Go implementation uses Rod with Chromium DevTools Protocol. Rod MUST remain behind the local browser boundary described in `02-architecture.md`.
 
-Explicitly prohibited for library operations:
+The adapter MUST NOT:
 
-- Playwright/Selenium/Puppeteer/WebDriver
-- headless browser automation
-- DOM clicking to implement add/start/finish/rate/review
-- crawling Goodreads book/search/review pages for metadata
-- reverse-engineered endpoints unrelated to authentication/session validation/import/export
+- call a reverse-engineered private Goodreads JSON/API endpoint;
+- emulate internal AJAX calls outside the page as an alternative client;
+- attach to the user's ordinary browser profile;
+- enter passwords or provider credentials;
+- bypass CAPTCHAs, challenges, rate limits, or anti-automation controls;
+- become a general Goodreads crawler, recommendation engine, or metadata API;
+- execute arbitrary caller-supplied selectors or JavaScript.
 
-Browser automation libraries are not required for V1. A small CDP client/library MAY be used by the dedicated authentication bootstrap component.
+Normal page resource requests initiated by Chromium are expected. Reading the rendered DOM, accessible tree, navigation result, and browser-managed downloads is allowed.
 
-Parsing the HTML forms/pages directly involved in import/export/session validation to obtain action URLs, CSRF tokens, generated-export links, or status messages is allowed and expected.
+## Browser and profile model
 
-## Session model
+Use one dedicated persistent Chromium user-data directory per local account.
 
-After login, use a standard Go HTTP client with a cookie jar.
+- `login` launches it headed.
+- Ordinary operations launch it headlessly by default.
+- `--headed` uses the same flows and profile with a visible window.
+- All commands serialize access with the per-profile lock.
+- The adapter closes every browser it starts.
+- The profile persists until explicit logout/reset.
+- Cookies stay browser-managed; do not copy them into a separate Go HTTP cookie jar.
 
-The HTTP adapter MUST:
+Initial browser resolution order:
 
-- send a stable, honest User-Agent identifying the tool/version;
-- preserve relevant cookies across requests;
-- follow normal redirects with conservative limits;
-- use HTTPS only;
-- detect redirect-to-login or login-page responses as session expiry;
-- never log cookie values or authenticated form contents.
+1. explicit configured executable, if supported;
+2. a compatible installed Chrome, Chromium, or Edge;
+3. a Rod-managed Chromium, if the packaging/first-run experiment confirms an acceptable user experience.
+
+Record the selected product/version in redacted debug logs. Do not silently switch between materially different profile formats if doing so risks corruption.
 
 ## Browser-assisted authentication
 
-V1 authentication is interactive browser-assisted session acquisition, not username/password form automation.
+Authentication is interactive and user-controlled.
 
 Conceptual algorithm:
 
-1. Discover an installed supported Chromium-family browser. Initial targets: Chrome, Chromium, Edge.
-2. Create a private, isolated temporary user-data directory.
-3. Choose an ephemeral local debugging endpoint and bind it to loopback only.
-4. Launch a **visible** browser using that temporary profile and remote debugging enabled.
-5. Navigate to the current Goodreads sign-in URL.
-6. Let the user authenticate entirely in the browser using whatever flow Goodreads offers (email/password, Google, Apple, Amazon, MFA, etc.).
-7. Detect that the browser has reached authenticated Goodreads state. Do not inspect or capture password fields.
-8. Through CDP, read only cookies relevant to Goodreads authentication/session reuse.
-9. Convert them to the project's explicit `Session` representation.
-10. Validate the session using the ordinary Goodreads HTTP adapter and an authenticated import/export page.
-11. Persist the validated session through `SessionStore`.
-12. Close the launched browser and delete the temporary profile.
+1. acquire the profile lock;
+2. launch the dedicated profile in headed mode;
+3. navigate to the current Goodreads sign-in page;
+4. tell the user to complete sign-in in the browser;
+5. wait for a known authenticated Goodreads state;
+6. open a private library page and confirm account access;
+7. close the browser, retaining the profile;
+8. report success.
 
 Requirements:
 
-- MUST NOT attach to or read cookies from the user's normal browser profile;
-- MUST NOT automate credential entry or social-login interactions;
-- MUST NOT use headless login;
-- MUST NOT persist the temporary browser profile after session acquisition;
-- MUST clean up browser process/profile on success, failure, cancellation, and timeout where feasible;
-- remote-debugging access MUST be loopback-only and ephemeral;
-- captured cookies/session payloads MUST never appear in logs;
-- if no supported browser is installed, return `ErrBrowserUnavailable` with an actionable message;
-- if login is cancelled/times out, return a distinct auth error without leaving session state half-written.
+- MUST NOT inspect or capture password-field contents;
+- MUST NOT type or submit credentials;
+- MUST NOT automate provider/MFA challenge choices;
+- MUST NOT read an existing personal browser profile;
+- MUST allow the user to interact with any login flow Goodreads presents;
+- MUST use a bounded, cancellable login timeout;
+- MUST distinguish cancellation, timeout, browser exit, and compatibility drift;
+- MUST leave no half-created success marker outside the browser profile.
 
-Implementation should keep the browser bootstrap separate from the Goodreads HTTP adapter. The latter must be testable and usable from a previously provisioned serialized session without any browser installed.
+A CAPTCHA or provider challenge is completed manually in the headed window. The application never attempts to defeat it.
 
-## Export workflow
+## Authenticated-state detection
 
-The adapter must treat export as potentially asynchronous.
+Do not infer authentication from one cookie name.
 
-Conceptual algorithm:
+Validation SHOULD combine:
 
-1. GET the import/export page and confirm authenticated state.
-2. Trigger a new export using the current form/link/request mechanism.
-3. Poll the minimum required status resource/page with bounded backoff until a generated export becomes available.
-4. Download the generated CSV.
-5. Validate that the body is actually CSV with recognizable Goodreads headers rather than an HTML login/error page.
-6. Return bytes + export metadata.
+- final origin/URL is an expected Goodreads page rather than sign-in;
+- a stable authenticated navigation/account marker is present;
+- a private library page loads without redirecting to login.
 
-Do not assume an old export link is fresh. An operation requesting fresh state MUST trigger or otherwise prove it obtained a newly generated export for that invocation.
+If markers disagree, return `ErrCompatibility` or `ErrSessionExpired`; do not guess.
 
-Set a conservative poll interval and total timeout. Do not hammer Goodreads.
+## Page contracts
 
-## Export CSV compatibility
+Each flow has an explicit contract containing:
 
-Observed Goodreads exports have historically included fields such as:
+- allowed starting URLs/origins;
+- page-identity assertions;
+- selector alternatives in preference order;
+- navigation or completion conditions;
+- parser expectations;
+- safe diagnostic stage names.
 
-```text
-Book Id
-Title
-Author
-Author l-f
-Additional Authors
-ISBN
-ISBN13
-My Rating
-Average Rating
-Publisher
-Binding
-Number of Pages
-Year Published
-Original Publication Year
-Date Read
-Date Added
-Bookshelves
-Bookshelves with positions
-Exclusive Shelf
-My Review
-Spoiler
-Private Notes
-Read Count
-Owned Copies
-```
+Prefer selectors in this order:
 
-Treat this list as a compatibility baseline, not a permanent guarantee.
+1. accessible role and name;
+2. associated label and semantic form attribute;
+3. human-visible text scoped to a stable region;
+4. narrow CSS selector based on stable IDs/data attributes;
+5. DOM structure only when covered by fixtures and no semantic option exists.
 
-The parser MUST:
+Never use generated CSS class names, global text matches, positional `:nth-child` selectors, or fixed sleeps when a condition can be awaited.
 
-- parse by header name, not column index;
-- tolerate column reordering;
-- preserve unknown columns in a raw row representation when practical;
-- reject files missing fields essential to the requested operation;
-- handle UTF-8 correctly;
-- handle quoted commas/newlines in reviews;
-- normalize Goodreads/Excel-style ISBN cells such as `="0553379887"` and empty `=""` values;
-- normalize CRLF/LF;
-- parse ratings conservatively as integers 0..5;
-- parse Goodreads date formats observed by fixtures and emit domain dates;
-- recognize at least `to-read`, `currently-reading`, and `read` statuses.
+Selector alternatives are intentional compatibility branches and must be tested. They are not an excuse to click the first loosely matching element.
 
-Do not silently coerce unknown exclusive shelves to a core status.
+## Waiting and navigation
 
-## Book lookup in an export
+Every operation has a total deadline.
 
-Lookup order for a mutation:
+Use event/condition waits for:
 
-1. normalized ISBN-13 exact match;
-2. normalized ISBN-10 exact match;
-3. if both identify different rows, return compatibility/conflict error.
+- page load and expected page identity;
+- element actionable state;
+- network/navigation completion when relevant;
+- visible confirmation;
+- changed Goodreads state.
 
-Do not fall back to fuzzy title/author matching.
+Do not use unbounded waits. Short bounded settling delays MAY be used only when documented and paired with a real state condition.
 
-## Import workflow
+Unexpected cross-origin navigation must stop the flow unless it is an allowed authentication provider during interactive login.
 
-The compatibility spike must determine the current form action, multipart fields, accepted CSV columns, completion/status response, and whether import is synchronous or asynchronous.
+## Live library reads
 
-Conceptual algorithm:
+The adapter reads shelf/library pages loaded in this invocation.
 
-1. GET import page and parse current form/CSRF state.
-2. Construct a minimal CSV representing the intended mutation.
-3. POST as the official import UI does.
-4. Follow/poll only the import workflow resources needed to determine accepted/rejected/completed state.
-5. Parse explicit Goodreads success/failure information.
-6. Return a structured `ImportResult`.
+For each page:
 
-The adapter MUST distinguish:
+1. assert authenticated page identity;
+2. parse only recognized book rows/cards;
+3. normalize book ID, title, author, ISBNs, rating, exclusive shelf, dates, custom shelves, and review when available;
+4. follow pagination only as needed for the caller's filter/limit;
+5. detect repeated pages or pagination loops;
+6. stop at a conservative page/request bound.
 
-- transport success (`HTTP 2xx`)
-- import accepted/queued
-- import completed
-- row rejected/unrecognized
-- session expired
-- compatibility drift (expected form/result cannot be recognized)
+Missing optional data is represented explicitly. Missing data required for the operation is a compatibility error.
 
-HTTP 200 by itself is never sufficient evidence of mutation success.
+The adapter must not retain parsed books after returning. Browser HTTP cache is acceptable runtime behavior; application-level result caching is not.
 
-## Mutation document construction
+## Exact ISBN resolution
 
-The safest strategy is export-first preservation:
+Mutations are ISBN-first.
 
-- for an existing book, start from the freshly exported row;
-- change only the requested semantic fields;
-- encode only the subset of columns proven safe/accepted by the compatibility suite;
-- preserve user-owned fields required to avoid destructive resets (rating, review, shelves, date read, etc.).
+Resolution may use Goodreads' visible search/navigation UI or ISBN information on a resolved book page. The adapter must:
 
-For a new ISBN not present in the export, construct the minimum accepted import row. Do not fabricate bibliographic metadata if Goodreads can identify the book from ISBN alone.
+1. normalize and validate the input;
+2. obtain one candidate through the UI;
+3. inspect the candidate's edition identifiers when Goodreads renders them;
+4. require an exact ISBN-10 or ISBN-13 match;
+5. reject ambiguous, missing, or mismatched candidates.
 
-The compatibility spike must answer whether `Exclusive Shelf` is accepted by Goodreads import or whether status must be expressed through another accepted column. Code should encode the empirically verified current contract.
+A title/author match alone is never sufficient. If Goodreads hides ISBNs needed for proof, record the alternative stable identity contract in the compatibility matrix before implementation.
+
+## Current-state capture
+
+Before a mutation, capture the target's relevant state from Goodreads.
+
+At minimum preserve/compare:
+
+- exclusive shelf/status;
+- rating;
+- review when the operation can affect it;
+- finish date when the operation can affect it;
+- custom shelves when the UI flow may affect them.
+
+If the UI cannot expose a field needed to prove preservation, the compatibility spike must determine whether the operation is safe. Do not assume.
+
+## Mutation contract
+
+A mutation uses the narrowest tested UI path.
+
+Common requirements:
+
+- assert the expected book and current state before clicking;
+- perform one semantic action;
+- scope elements to the target book/page;
+- wait for an explicit completion marker or changed state;
+- reload or revisit the authoritative Goodreads view;
+- parse the resulting fields;
+- compare requested changes and preservation invariants;
+- return `Verified=true` only after a match.
+
+A click or form submission is not success. An HTTP 2xx observed inside the browser is not success. A toast may be one completion signal but is not readback verification.
+
+### Add / status change
+
+The spike must identify the most stable Goodreads control for selecting `to-read`, `currently-reading`, or `read`.
+
+For an existing book, the adapter treats add as ensure-status and preserves unrelated fields. For a new book, it verifies the resulting library entry and exact ISBN.
+
+### Rating
+
+Select the exact numeric rating through the user-facing rating control. Verify the numeric value after reload. Do not infer success from star hover/visual classes alone unless the parser contract proves them stable.
+
+### Review
+
+Use the ordinary review editor. Preserve the full supplied Unicode text and verify the saved value after reload. Clearing must be explicit.
+
+Never include review text in logs, screenshots by default, or error messages.
+
+### Finish date
+
+Use the supported Goodreads review/edit-reading-activity UI established by the spike. Verify the resulting calendar date after reload. If Goodreads cannot reliably represent or expose it, `finish --date` remains unsupported rather than partially succeeding.
 
 ## Idempotency and retries
 
-Reads/export trigger requests MAY be retried conservatively when safe.
+Reads and navigation MAY retry conservative transient failures when no mutation has been attempted.
 
-Mutation POSTs MUST NOT be automatically repeated after ambiguous network failure unless the protocol provides a reliable idempotency/completion check. Prefer returning an ambiguous-result error and letting the caller re-export/check state.
+After a mutating click/submission:
+
+- do not automatically replay it after timeout or ambiguous navigation;
+- first perform a fresh readback;
+- if state matches, return verified success;
+- if state does not match and completion is unknown, return `ErrMutationAmbiguous`;
+- allow a new user invocation to act idempotently from observed state.
+
+Already-satisfied desired state returns verified success without an unnecessary click when preservation checks pass.
 
 ## Verification
 
-A post-import fresh export is the strongest verification. The application may make this optional for latency/load reasons, but the adapter must make it possible.
+Verification is mandatory in v0.1.
 
-Verification compares only fields requested by the mutation; unrelated Goodreads-normalized metadata changes do not fail verification.
+Compare only the requested fields plus explicitly identified preservation invariants. Goodreads-owned metadata changes do not fail verification.
 
-## Compatibility versioning
+A structured verification failure should include safe field names and expected/observed non-sensitive values. Review mismatches report lengths/hashes or a generic mismatch, not the private text.
 
-Keep compatibility knowledge explicit and testable. Avoid selectors/regexes scattered across commands.
+## Export workflow
 
-Suggested internal structure:
+`gr export` drives Goodreads' official import/export page through the browser.
 
-```text
-authbrowser/
-  discover.go
-  launch.go
-  session.go
+Conceptual flow:
 
-goodreads/
-  export.go
-  import.go
-  forms.go
-  compatibility.go
-```
+1. open the import/export page and assert authentication;
+2. trigger a new export;
+3. wait with bounded polling for generation;
+4. identify the download produced for this invocation;
+5. download through the browser;
+6. validate that the file is CSV with recognizable Goodreads headers;
+7. atomically place it at the requested destination or stream it as specified by the CLI.
+
+Do not use an old export link unless freshness can be proven. Export CSV is a user artifact, not the read path for `library` or the write path for mutations.
+
+CSV import is not part of the initial production adapter.
+
+## Downloads and files
+
+Use a private temporary download directory per operation.
+
+- randomized path;
+- restrictive permissions where possible;
+- reject unexpected filenames/types;
+- apply a conservative size limit;
+- clean up on success and ordinary failure;
+- move to the requested destination only after validation;
+- refuse overwrite unless the application authorized `--force`.
+
+## Compatibility failures
+
+Keep stage names stable enough for issue reports, for example:
+
+- `auth.page`
+- `auth.private-library`
+- `library.page`
+- `library.row`
+- `book.resolve`
+- `mutation.status`
+- `mutation.rating`
+- `mutation.review`
+- `mutation.finish-date`
+- `mutation.verify`
+- `export.generate`
+- `export.download`
 
 When Goodreads changes:
 
-- return `ErrCompatibility` with stage (`auth`, `export`, `import`, `csv`);
-- include safe diagnostic context in debug logs;
-- never guess form field names or silently fall back to scraping unrelated pages.
+- return `ErrCompatibility` with stage and safe context;
+- suggest `--headed --debug`;
+- never dump authenticated HTML automatically;
+- update fixtures/contracts before changing production selectors;
+- never fall back to a private endpoint or broad scraper.
 
-## Rate limiting / politeness
+## Politeness and bounds
 
 This tool is for low-volume personal actions.
 
-- no background polling except bounded completion polling for an explicit user request;
+- no background polling except bounded waits for an explicit command;
 - no scheduled sync;
 - no bulk crawling;
-- use backoff for export/import status checks;
-- respect server errors/retry hints;
-- keep request counts small and observable in integration tests.
+- cap pagination and retries;
+- use conservative backoff for export generation;
+- honor visible service errors and retry guidance;
+- avoid loading pages unrelated to the requested action;
+- keep live-test activity serial and small.

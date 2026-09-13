@@ -2,181 +2,228 @@
 
 ## Threat model
 
-The sensitive asset is the authenticated Goodreads session. Possession of it may allow reading and mutating the user's Goodreads library without their password.
+The most sensitive local asset is the dedicated Chromium profile. Possession of it may allow reading and mutating the user's Goodreads library without their password and may expose browser-managed session data.
 
 The tool also transiently handles:
 
-- CDP access to the temporary login browser;
-- CSRF tokens;
-- full Goodreads library exports, including reviews/private notes if present;
-- remote MCP bearer token when HTTP MCP is enabled.
+- authenticated Goodreads pages;
+- CSRF tokens and form state inside Chromium;
+- reviews and private notes rendered by Goodreads;
+- browser screenshots/HTML when explicitly enabled;
+- full CSV exports;
+- an MCP bearer token if remote HTTP is added later.
 
-The CLI MUST NOT collect or store the user's Goodreads password. Passwords and social-provider credentials are entered only into Goodreads/provider pages inside the launched browser.
+The CLI MUST NOT collect, receive, store, or log the user's Goodreads password. Credentials are entered only into Goodreads or identity-provider pages inside the headed login browser.
 
-Treat all session/authentication data and library exports as secrets/private data.
+Treat the entire profile and all private Goodreads content as secret/private data.
 
-## Browser-assisted login security
+## Dedicated profile security
 
-`gr login` launches a supported Chromium-family browser with an isolated temporary profile.
+`gr login` creates or opens a CLI-owned Chromium profile under the platform-appropriate application data directory.
 
-Security requirements:
+Requirements:
 
-- never attach to the user's normal/default browser profile;
-- never read cookies from an existing profile;
-- never automate typing/clicking credentials;
-- never inspect, record, or log password/form field contents;
-- use a visible browser, not headless mode;
-- bind remote debugging to loopback only;
-- use an ephemeral/random debugging port where practical;
-- keep CDP access alive only for the duration of the login ceremony;
-- capture only cookies/session state needed for Goodreads authentication reuse;
-- validate the captured session through the normal HTTP adapter before persisting it;
-- persist only validated session material;
-- terminate the launched browser and remove the temporary profile on success, failure, timeout, or cancellation where feasible;
-- temporary profile directory permissions must be restrictive where supported by the OS;
-- debug logs must never contain CDP cookie payloads or profile contents.
+- use a path unique to this application;
+- never use, attach to, copy, or inspect the user's ordinary browser profile;
+- create directories with restrictive permissions where supported;
+- do not copy cookies into a second application session store;
+- do not query Chromium's cookies/history/databases directly;
+- keep remote debugging bound to loopback or a process-local transport;
+- never expose a debugging endpoint on a network interface;
+- hold the per-profile lock whenever Chromium uses the profile;
+- do not include the profile in diagnostic bundles or backups by default;
+- delete it only after resolving the exact owned path and only for explicit logout/reset;
+- never follow attacker-controlled symlinks or accept an unsafe profile path for deletion.
 
-The browser bootstrap is an authentication mechanism only. It must not become an implementation path for Goodreads library operations.
+The browser may encrypt some stored values using operating-system facilities, but the application MUST NOT claim that the full profile is encrypted at rest. Documentation must tell users that local account access can imply Goodreads access.
 
-## Session persistence
+## Login security
 
-Desktop/local default:
+The login browser is always visible and user-controlled.
 
-- store session material in the operating system's credential/keychain service behind a `SessionStore` interface;
-- store only the minimum cookies/session fields needed;
-- never silently fall back to an unencrypted plaintext session file.
+The automation MUST NOT:
 
-Headless/container mode:
+- inspect or read password fields;
+- type or submit credentials;
+- select an identity/provider account;
+- intercept credential requests;
+- bypass MFA, CAPTCHA, provider warnings, or anti-automation checks;
+- extract session cookies for use outside the dedicated profile.
 
-- support loading serialized session material from an explicit environment variable or secret file;
-- the exact format must be versioned, e.g. `gr-session-v1`;
-- documentation must treat it like a password;
-- secret-file permissions should be checked where the platform supports it;
-- headless environments do not perform interactive browser login; session material is provisioned out of band.
+The application observes only enough page state to determine whether Goodreads authentication succeeded and a private library page is accessible.
 
-The application config directory may contain non-secret metadata and lock files, not Goodreads cookies unless the user explicitly opts into a documented fallback in a future release.
+On cancellation, timeout, or browser exit, close processes cleanly. Retaining a partially initialized dedicated profile is acceptable only as browser-owned state; the command must not report success until authenticated access is validated.
 
-## Session serialization
+## Logout and profile deletion
 
-Do not expose raw cookie jar internals as unstable Go gob data.
+`gr logout` removes local access by deleting the dedicated profile. It does not promise global Goodreads logout.
 
-Use an explicit versioned structure, for example:
+Deletion requirements:
 
-```json
-{
-  "version": 1,
-  "cookies": [
-    {
-      "name": "...",
-      "value": "...",
-      "domain": ".goodreads.com",
-      "path": "/",
-      "expires": "...",
-      "secure": true,
-      "http_only": true
-    }
-  ]
-}
-```
+1. acquire the profile lock;
+2. resolve and validate the exact application-owned profile path;
+3. ensure no browser process started by the application is using it;
+4. delete only that directory;
+5. return an actionable partial-failure error if cleanup is incomplete.
 
-The serialized value itself is secret and should be encrypted by the OS keychain at rest when stored locally.
+The command is idempotent. Never broaden deletion to a parent config/data directory.
 
-Do not assume every browser cookie attribute maps one-to-one to Go's cookie jar. Preserve enough explicit metadata to reconstruct a functionally equivalent authenticated session and version the format for future changes.
+A future `logout --remote` may drive Goodreads' sign-out UI before local deletion, but it requires a separate tested contract.
 
 ## Configuration precedence
 
-Keep configuration minimal. Suggested precedence:
+Keep configuration minimal:
 
 1. explicit CLI flags
 2. environment variables
-3. small config file for non-secret defaults
+3. a small config file for non-secret defaults
 4. built-in defaults
 
-Do not create a config file until there is a real setting to persist.
+Do not create a config file until there is a real persistent setting.
 
-Likely environment variables for headless use:
+Provisional environment variables:
 
 ```text
-GOODREADS_CLI_SESSION       serialized secret session
-GOODREADS_CLI_MCP_TOKEN     bearer token for remote MCP
-GOODREADS_CLI_TIMEOUT       optional operation timeout
+GOODREADS_CLI_BROWSER       explicit Chromium-family executable path
+GOODREADS_CLI_TIMEOUT       ordinary operation timeout
+GOODREADS_CLI_LOGIN_TIMEOUT interactive login timeout
+GOODREADS_CLI_MCP_TOKEN     future remote MCP bearer token
 ```
 
-Names are provisional until first release; once documented, keep them stable.
+Names become stable only when documented for a release.
 
-Do not introduce an environment variable for Goodreads passwords.
+There is no password variable, cookie variable, or serialized-session variable. The profile location follows platform defaults and is not routinely overridden.
+
+## Browser selection and acquisition
+
+An explicit browser path must point to a supported executable and is validated before launch.
+
+If Rod-managed Chromium download is enabled:
+
+- download only through Rod's pinned mechanism/version;
+- verify whatever integrity metadata the dependency provides;
+- use a documented cache path separate from the Goodreads profile;
+- provide clear first-run progress and failure messages;
+- do not require elevated privileges;
+- never execute a browser binary from the Goodreads profile or download directory.
+
+If managed download is not reliable on a platform, require a supported installed browser and fail actionably.
+
+## Process isolation
+
+Launch Chromium with only the flags required for profile selection, headless/headed behavior, downloads, and automation.
+
+- avoid `--no-sandbox` by default;
+- never disable TLS validation;
+- never expose CDP remotely;
+- do not install extensions;
+- do not load arbitrary user scripts;
+- restrict navigation to expected Goodreads origins except user-controlled identity-provider navigation during login;
+- treat unexpected post-login cross-origin navigation as an error.
+
+Containers that require weakened browser sandboxing need a separate deployment threat-model decision; v0.1 does not silently opt into it.
 
 ## Logs
 
-Default logging is minimal and never contains library data.
+Default logging is minimal and contains no library data.
 
-Always redact:
+Always redact or omit:
 
-- `Cookie`
-- `Set-Cookie`
-- `Authorization`
-- CSRF tokens
-- serialized session payloads
-- CDP cookie results
-- raw request/response bodies from authenticated Goodreads pages
-- review/private-note text
+- cookies and browser storage;
+- `Cookie`, `Set-Cookie`, and `Authorization`;
+- CSRF tokens and authenticated query parameters;
+- password/form values;
+- raw authenticated HTML;
+- review and private-note text;
+- CSV row contents;
+- screenshots;
+- exact profile path in ordinary output.
 
 Debug logging may include:
 
-- URL origin + path (without secret query parameters)
-- HTTP method
-- status code
-- duration
-- retry/poll attempt
-- parsed compatibility stage/state
-- CSV row/header counts
-- browser discovery result (product/path/version), but not profile contents or cookies
+- URL origin and safe path;
+- operation and compatibility stage;
+- browser product/version;
+- page-load duration;
+- selector alternative identifier, but not private element text;
+- pagination/retry counts;
+- high-level verification field names.
 
-It should not dump rows or browser storage.
+Review mismatches log neither expected nor observed text. Use lengths or a non-reversible diagnostic digest only when genuinely useful.
 
-## CSV privacy
+## Diagnostic artifacts
 
-A full export is personal data. Normal commands should keep it in memory.
+Screenshots, DOM snapshots, and traces are opt-in because they may contain private library data.
 
-`gr export --out` is an explicit user request and may write a file. Use normal user permissions and do not copy it elsewhere.
+If implemented:
 
-Temporary files, if unavoidable:
+- require an explicit flag/path;
+- print a privacy warning to stderr;
+- never capture login credential fields;
+- prefer screenshots after authentication pages;
+- sanitize cookies and storage from traces;
+- use restrictive permissions;
+- clearly report every created file;
+- never upload artifacts automatically.
 
+## Export privacy
+
+A Goodreads CSV export is personal data.
+
+`gr export --out` is an explicit request and may persist it. Use normal user-only permissions where possible and do not copy it elsewhere.
+
+Temporary download files use:
+
+- a randomized private directory;
 - restrictive permissions;
-- OS temp directory;
-- randomized names;
+- conservative size/type validation;
 - cleanup on success and ordinary failure;
-- no predictable shared path.
+- no predictable shared filename.
 
-The temporary browser profile follows the same rules and should be treated as especially sensitive because it may contain authenticated browser state before cleanup.
+Do not log CSV rows or review/private-note fields.
 
-## Remote MCP security
+## Browser cache versus application cache
 
-`gr mcp --http` MUST require client authentication unless bound only to a loopback interface.
+Chromium may maintain ordinary cache inside the dedicated profile. This is permitted browser runtime state.
 
-Initial acceptable model:
+The application MUST NOT:
 
-- loopback binding: may run without bearer auth by explicit local-only default;
-- non-loopback binding: refuse startup unless an MCP bearer token/approved auth mechanism is configured.
+- read cached responses instead of navigating Goodreads;
+- persist parsed books outside an invocation;
+- use history/cache databases as a library store;
+- promise cache invalidation semantics.
 
-Remote MCP token and Goodreads session are separate secrets. Never return either through an MCP tool.
+Where freshness is critical, navigation/reload settings should cause Goodreads to provide current state and the verification flow should revisit the authoritative page.
 
-TLS termination may be provided by the hosting platform/reverse proxy. Document that internet-facing deployments require HTTPS.
+## MCP security
 
-Interactive `gr login` is a local-machine workflow. A remotely hosted/headless MCP process should be provisioned with a previously captured serialized session rather than exposing CDP/browser login remotely.
+Local stdio MCP inherits the current user's filesystem access and uses the same profile lock.
+
+Remote HTTP is deferred. If implemented later:
+
+- non-loopback binding requires authenticated MCP clients;
+- internet exposure requires HTTPS;
+- browser/profile storage must be persistent and access-controlled;
+- remote debugging must remain inaccessible;
+- one process represents one Goodreads account;
+- login/reauthentication needs an explicit safe design;
+- neither profile data nor MCP tokens may be returned by tools.
+
+The MCP client token and Goodreads browser profile are separate secrets.
 
 ## No telemetry by default
 
-Initial releases send no analytics, crash reports, library metrics, or usage telemetry to the project maintainer.
+Initial releases send no analytics, crash reports, library metrics, screenshots, or usage telemetry to the maintainer.
 
-If telemetry is ever proposed, it requires a separate product decision and explicit opt-in design.
+Any future telemetry requires a separate product decision and explicit opt-in design.
 
 ## Supply-chain expectations
 
 - keep dependencies few;
-- prefer standard library for HTTP/CSV;
-- use the smallest maintained CDP/browser-launch dependency that cleanly supports browser discovery, temporary-profile launch, navigation, and cookie retrieval;
-- do not introduce a full end-to-end browser automation framework solely for login;
 - pin Go module versions;
-- CI runs vulnerability/dependency scanning where practical;
-- release binaries should be checksummed; signing can be added once distribution is established.
+- isolate direct Rod/CDP use behind the browser package;
+- document the Chromium version strategy;
+- run dependency and vulnerability scanning in CI where practical;
+- publish release checksums;
+- add signing when the release process is ready;
+- never dynamically download arbitrary scripts or selector updates.

@@ -1,26 +1,20 @@
 # goodreads-cli
 
-A small, stateless CLI for working with Goodreads while keeping Goodreads as the only source of truth.
+`goodreads-cli` is a Go command-line client for managing a personal Goodreads library through Goodreads' web UI.
 
-The project deliberately stays narrow:
+The project deliberately keeps Goodreads as the only source of truth. It does not maintain a local book database or synchronization ledger. A dedicated Chromium profile stores the signed-in browser session; every read and write is performed live through browser automation.
 
-- use Goodreads import/export as the library integration boundary
-- no local library database or sync state
-- use a temporary local browser only for interactive Goodreads login/session capture
-- no browser automation for Goodreads library operations
-- run locally and be easy to share
-- expose a clean CLI that agents can use directly
-- keep room for an MCP adapter later without making MCP the core
+## Direction
 
-## Stack
+- Go + Cobra CLI, distributed as a single cross-platform executable
+- [Rod](https://github.com/go-rod/rod) as the initial Go browser-automation library
+- visible, user-controlled login on Goodreads' own pages
+- headless-by-default automation after login, with a headed troubleshooting mode
+- semantic commands such as `library`, `add`, `start`, `finish`, `rate`, and `review`
+- deterministic `--json` output for scripts and agents
+- MCP as a later, thin adapter over the same application core
+- no private Goodreads API, password collection, local library database, or background sync
 
-- Go
-- Cobra
+CSV export remains an explicit user-facing escape hatch. CSV import/export is not the implementation path for ordinary library reads or mutations.
 
-## Principle
-
-Every library operation starts from Goodreads and writes back to Goodreads through import/export. The only persistent local secret is reusable Goodreads session material stored securely; any library CSVs or temporary browser profile data are transport artifacts, not a second copy of the library.
-
-## Status
-
-Early development. See `specs/` for the implementation contract.
+The implementation contract lives in [`specs/`](specs/README.md). Start there before changing product behavior.

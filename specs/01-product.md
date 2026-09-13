@@ -2,11 +2,11 @@
 
 ## Problem
 
-Goodreads no longer offers a practical public API for personal-library management, while AI assistants are increasingly good at discovering books and reasoning over public book information. The missing piece is a tiny, portable tool that gives an assistant controlled access to the user's **private Goodreads library state**.
+Goodreads no longer offers a practical public API for personal-library management. AI assistants can discover books and reason over public information, but they need a small, controlled way to work with the user's private Goodreads state.
 
-`goodreads-cli` fills only that gap.
+`goodreads-cli` fills that gap by automating the same Goodreads web interface a person uses.
 
-A user or agent should be able to express actions such as:
+Typical requests are:
 
 - "show what I am currently reading"
 - "add ISBN X to want-to-read"
@@ -15,86 +15,87 @@ A user or agent should be able to express actions such as:
 - "change my rating of ISBN X to five"
 - "set my review of ISBN X"
 
-The tool performs the Goodreads-specific state transition. It does not try to understand which book the user meant from a natural-language title; the calling assistant can resolve that using web search and then pass an ISBN.
+The tool performs the Goodreads-specific transition. It does not infer a book from a natural-language title; the caller resolves the book to an ISBN first.
 
 ## Primary users
 
 ### Human CLI user
 
-Wants a tiny executable with no runtime or database. Installs it, authenticates once through the normal Goodreads sign-in page opened in a supported local browser, and can inspect or mutate Goodreads from a shell.
+Installs one Go binary, signs in once through a visible dedicated browser window, and inspects or mutates Goodreads from a shell. No separate runtime or local database is required.
 
 ### AI agent with shell access
 
-Uses deterministic CLI commands and `--json`. The agent is expected to do book discovery and public-web research itself, then call this tool with a concrete ISBN and explicit desired state.
+Uses deterministic commands and `--json`. The agent performs public-web discovery separately, then calls this tool with a concrete ISBN and explicit desired state.
 
 ### MCP client
 
-Uses semantic MCP tools backed by the exact same application service. MCP is transport/integration, not a second implementation.
+Uses semantic tools backed by the same application service. MCP is a transport adapter, not a second implementation.
 
 ## Source-of-truth invariant
 
 Goodreads is the **only** canonical library state.
 
-The application MUST NOT persist a copy of the user's library for later synchronization. Exported CSV data may exist transiently in memory or temporary files during one operation. An explicitly requested `gr export` output is a user artifact, not application state.
+The application MUST NOT persist book records for later synchronization. Each command obtains the Goodreads state it needs during that invocation.
 
 Permitted persistent state:
 
-- authenticated Goodreads session material
+- the dedicated browser profile, including Goodreads cookies and web storage
 - non-secret configuration
-- lock files / ephemeral process coordination
-- logs that contain no library contents or secrets by default
+- browser/download cache owned by the automation runtime
+- lock files and process-coordination metadata
+- redacted diagnostic logs
+- a CSV file explicitly requested by `gr export`
 
 Forbidden persistent state:
 
-- local book database
-- cached canonical library
+- local book database or canonical cache
 - mutation queue intended to sync later
-- shadow copy of ratings/reviews/shelves
+- shadow copy of ratings, reviews, shelves, or reading history
 - background synchronization state
+
+The browser profile is authentication/runtime state, not a second library database. Code MUST NOT query Chromium's profile database as a substitute for visiting Goodreads.
 
 ## Goals
 
 1. Minimal installation and setup.
-2. A single cross-platform binary.
-3. Goodreads import/export as the sole library-state integration mechanism.
-4. Browser-assisted authentication that never asks the CLI to collect the user's Goodreads password.
+2. A Go-native, cross-platform executable.
+3. Browser automation for live Goodreads reads and writes.
+4. Authentication that never asks the CLI to collect a password.
 5. Useful direct CLI UX.
-6. Deterministic agent UX (`--json`, stable errors, no prompts outside explicit auth flows).
-7. A reusable application core that can be exposed over MCP.
-8. Safe handling of Goodreads session cookies.
-9. Conservative behavior when Goodreads changes its pages or CSV formats.
+6. Deterministic agent UX: JSON, stable errors, and non-interactive operations after login.
+7. A reusable application core that can later be exposed over MCP.
+8. Conservative, verifiable mutations.
+9. Clear failure when Goodreads changes its UI.
 
 ## Non-goals
 
-- Goodreads public book search
-- scraping ratings/reviews/book pages
-- recommendations
-- natural-language title matching
-- metadata database
-- reading analytics beyond simple filtering of a freshly exported library
-- progress/page tracking unless Goodreads import/export later exposes it reliably
-- started-reading date if the import/export format cannot express it
-- reread event history if the CSV cannot represent it faithfully
-- Goodreads social features
-- friends/followers/groups
-- browser automation for Goodreads library operations
+- Goodreads public book search or fuzzy title matching
+- recommendations or metadata enrichment
+- a private/undocumented Goodreads API client
+- reading analytics beyond filtering live Goodreads results
+- progress/page tracking in the first release
+- rich reread event history in the first release
+- Goodreads social features, friends, followers, or groups
+- manipulating the user's normal Chrome/Chromium/Edge profile
+- collecting or autofilling account credentials
 - multi-user hosted SaaS
 - automatic periodic sync
+- using CSV import as the normal mutation mechanism
 
-A narrowly scoped browser-assisted login ceremony is explicitly allowed. It exists only to let the user authenticate on Goodreads' own page and to capture the resulting session cookies. After login, all Goodreads library operations MUST use ordinary HTTP plus import/export; no DOM automation is allowed for those operations.
+CSV export remains supported as an explicit user artifact. CSV import is out of the initial public interface.
 
 ## Book identity
 
-The public mutation contract is ISBN-first.
+The initial public mutation contract is ISBN-first.
 
 - Commands MUST accept ISBN-10 or ISBN-13.
-- Input ISBNs MUST be normalized by removing common presentation separators and validating checksum where practical.
-- Internally prefer ISBN-13 when both are available.
+- Inputs MUST be normalized by removing common separators and validating checksums where practical.
+- Internally prefer ISBN-13 when Goodreads exposes both.
 - The tool MUST NOT guess a book from a title.
-- If Goodreads import cannot identify the requested edition/book from the provided ISBN, return a clear not-found/import failure.
+- If Goodreads cannot resolve the requested edition/book from the ISBN, return a clear not-found error.
 - Books without a usable ISBN are outside the initial mutation scope.
 
-This is intentional: AI assistants with web access are better placed to resolve "book X" into an ISBN than this tool is.
+The adapter MAY search or navigate Goodreads as necessary to resolve an exact ISBN. It MUST NOT expose a general public Goodreads search API.
 
 ## Reading status model
 
@@ -104,56 +105,73 @@ The core status enum is:
 - `currently-reading`
 - `read`
 
-Do not invent statuses that Goodreads import/export does not round-trip reliably. Custom/exclusive shelves are compatibility-dependent and should only be added after the base statuses are proven.
+Custom shelves may be displayed when already present, but editing them is deferred until explicitly specified and tested.
 
-## Product-level mutation semantics
+## Mutation semantics
 
 ### Add
 
-`add(isbn, status=to-read)` ensures the book is present with the requested status. It MUST preserve existing user state when Goodreads already contains the book except for fields explicitly requested by the operation.
+`add(isbn, status=to-read)` ensures the book is present with the requested exclusive shelf. If it is already present, only the explicitly requested status may change.
 
 ### Start
 
-`start(isbn)` changes the status to `currently-reading` while preserving rating, review, custom shelves and other user-owned fields represented in the export.
+`start(isbn)` sets the exclusive shelf to `currently-reading` while preserving rating, review, custom shelves, and other user state.
 
-No started date is promised unless the Goodreads CSV contract demonstrably supports one.
+Recording a start timestamp is not promised in the first release.
 
 ### Finish
 
-`finish(isbn, date, rating?)` changes the status to `read`, sets `Date Read`, and optionally sets the rating. Default date is the caller's local calendar date if omitted.
+`finish(isbn, date, rating?)` sets the exclusive shelf to `read`, records the finish date through the Goodreads UI when supported, and optionally sets the rating. If omitted, date defaults to the caller's local calendar date.
 
 ### Rate
 
-`rate(isbn, 1..5)` changes only the user's rating. A rating of zero/unset is not exposed until its semantics are validated.
+`rate(isbn, 1..5)` changes only the user's rating. Clearing a rating is deferred until separately specified.
 
 ### Review
 
-`review(isbn, text)` changes only the user's review. Clearing a review is a separate explicit operation/flag; an omitted review never means "erase".
+`review(isbn, text)` changes only the user's review. Clearing requires an explicit flag; omitted text never means erase.
 
-## Freshness
+## Freshness and verification
 
-`library` and any query built on it MUST obtain a fresh Goodreads export for that invocation. There is no hidden TTL cache.
+Every read MUST be based on pages loaded from Goodreads during that invocation. There is no hidden TTL cache.
 
-Mutations MUST first obtain the current row when preservation of existing fields is required. For adding a genuinely new ISBN, an export may still be used to detect existing state and maintain the "Goodreads first" invariant.
+Every mutation MUST:
+
+1. observe enough current state to avoid unintended changes;
+2. perform the narrow UI action;
+3. wait for an explicit completion marker or navigation;
+4. read the affected state back from Goodreads; and
+5. return success only when the requested fields match.
+
+The application MUST NOT equate a click, HTTP status, toast alone, or page navigation alone with verified success.
+
+## Browser behavior
+
+`gr login` launches the CLI-owned profile in headed mode. The user completes any Goodreads/Amazon/social-provider/MFA flow directly in the browser. The CLI only detects that authenticated Goodreads state has been reached.
+
+Ordinary commands reuse that profile and run headless by default. A global headed flag is available for troubleshooting and compatibility work. All browser operations are serialized per profile.
+
+The browser adapter MUST NOT attach to the user's normal browser profile, enter credentials, bypass challenges, or defeat anti-automation controls. If Goodreads blocks the chosen mode, surface an actionable error.
 
 ## Mobile and portability
 
-The CLI itself runs where the executable runs. Mobile assistant use is enabled later by the same binary exposing remote MCP (`gr mcp --http ...`) from a reachable host. The application core must not depend on whether the caller is CLI, stdio MCP, or HTTP MCP.
+The CLI runs where the browser and executable run. Local stdio MCP can use the same profile.
 
-A hosted multi-user account system is explicitly out of scope. One running process/session represents one Goodreads account.
+Remote/headless deployment is deferred because transferring a browser profile is security-sensitive and authentication providers may require a real interactive browser. The architecture must not preclude a future single-account deployment, but v0.1 makes no remote-browser promise.
 
 ## Success criteria for the first useful release
 
-A clean machine can install one binary and then:
+A clean machine can install the binary and then:
 
-1. run `gr login`, authenticate on the real Goodreads sign-in page in a supported Chromium-family browser, and have the resulting session stored securely without giving the CLI a password;
-2. close the login browser and perform all subsequent Goodreads operations without browser automation;
-3. `gr library --shelf currently-reading --json` and receive the current state;
-4. `gr add <isbn>`;
-5. `gr start <isbn>`;
-6. `gr finish <isbn> --rating 4`;
-7. `gr rate <isbn> 5`;
-8. `gr review <isbn> --text ...`;
-9. run the same application operations through local MCP stdio.
+1. run `gr login`, authenticate in a visible dedicated Chromium window, and retain the session without giving the CLI a password;
+2. close that window and reuse the dedicated profile on later commands;
+3. run `gr library --shelf currently-reading --json` against live Goodreads state;
+4. run `gr add <isbn>`;
+5. run `gr start <isbn>`;
+6. run `gr finish <isbn> --rating 4`;
+7. run `gr rate <isbn> 5`;
+8. run `gr review <isbn> --text ...`;
+9. receive verified results for every successful mutation;
+10. run the same application operations through local MCP stdio.
 
-If Goodreads CSV re-import cannot reliably update existing books, this product shape must be reconsidered rather than bypassing the constraint with browser automation.
+If a Goodreads UI path cannot be driven and verified reliably, that operation remains unsupported until the compatibility contract is updated. Do not silently fall back to an undocumented API or bulk CSV import.
