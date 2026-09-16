@@ -129,6 +129,7 @@ type Page interface {
 	Has(ctx context.Context, selector string) (bool, error)
 	HasText(ctx context.Context, selector, jsRegex string) (bool, error)
 	HTML(ctx context.Context) (string, error)
+	Click(ctx context.Context, selector string) error
 	Close() error
 }
 
@@ -352,4 +353,15 @@ func (p *rodPage) HasText(ctx context.Context, selector, jsRegex string) (bool, 
 
 func (p *rodPage) HTML(ctx context.Context) (string, error) {
 	return p.rod.Context(ctx).HTML()
+}
+
+func (p *rodPage) Click(ctx context.Context, selector string) error {
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err != nil {
+		return err
+	}
+	if err := element.ScrollIntoView(); err != nil {
+		return err
+	}
+	return element.Click(proto.InputMouseButtonLeft, 1)
 }

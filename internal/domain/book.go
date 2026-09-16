@@ -12,7 +12,7 @@ const (
 
 var (
 	ErrInvalidStatus = errors.New("invalid reading status")
-	ErrInvalidRating = errors.New("invalid rating filter")
+	ErrInvalidRating = errors.New("invalid rating")
 	ErrInvalidLimit  = errors.New("invalid library limit")
 )
 
@@ -36,6 +36,21 @@ type Book struct {
 	Review *string `json:"review,omitempty"`
 }
 
+type BookUpdate struct {
+	Status   *ReadingStatus `json:"status,omitempty"`
+	Rating   *int           `json:"rating,omitempty"`
+	DateRead *string        `json:"date_read,omitempty"`
+	Review   *string        `json:"review,omitempty"`
+}
+
+type MutationResult struct {
+	Operation string     `json:"operation"`
+	Before    Book       `json:"before"`
+	After     Book       `json:"after"`
+	Changes   BookUpdate `json:"changes"`
+	Verified  bool       `json:"verified"`
+}
+
 type LibraryFilter struct {
 	Shelf  ReadingStatus
 	Rating int
@@ -51,6 +66,13 @@ func (f LibraryFilter) Validate() error {
 	}
 	if f.Limit < 1 || f.Limit > 200 {
 		return ErrInvalidLimit
+	}
+	return nil
+}
+
+func ValidateRating(rating int) error {
+	if rating < 1 || rating > 5 {
+		return ErrInvalidRating
 	}
 	return nil
 }

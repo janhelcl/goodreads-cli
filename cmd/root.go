@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,6 +22,16 @@ import (
 var errUsage = errors.New("invalid command usage")
 
 type authFactory func(headed bool) (app.Service, error)
+
+type mutationOutput struct {
+	OK        bool              `json:"ok"`
+	Operation string            `json:"operation"`
+	ISBN13    string            `json:"isbn13"`
+	BookID    string            `json:"book_id"`
+	Title     string            `json:"title"`
+	Changes   domain.BookUpdate `json:"changes"`
+	Verified  bool              `json:"verified"`
+}
 
 func defaultAuthFactory(headed bool) (app.Service, error) {
 	paths, err := profile.DefaultPaths()
@@ -231,6 +242,46 @@ func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
 			return write(cmd, book, fmt.Sprintf("%s — %s (%s)", book.Title, book.Author, book.Status))
 		},
 	})
+	root.AddCommand(&cobra.Command{
+		Use:   "rate <isbn> <rating>",
+		Short: "Set and verify a book rating",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("%w: rate requires one ISBN and a rating from 1 through 5", errUsage)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			isbn, err := domain.NormalizeISBN(args[0])
+			if err != nil {
+				return fmt.Errorf("%w: %v", errUsage, err)
+			}
+			rating, err := strconv.Atoi(args[1])
+			if err != nil || domain.ValidateRating(rating) != nil {
+				return fmt.Errorf("%w: rating must be 1 through 5", errUsage)
+			}
+			service, err := factory(headed)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := newContext(cmd, time.Minute)
+			defer cancel()
+			result, err := service.Rate(ctx, isbn, rating)
+			if err != nil {
+				return err
+			}
+			output := mutationOutput{
+				OK:        true,
+				Operation: result.Operation,
+				ISBN13:    isbn.ISBN13,
+				BookID:    result.After.BookID,
+				Title:     result.After.Title,
+				Changes:   result.Changes,
+				Verified:  result.Verified,
+			}
+			return write(cmd, output, fmt.Sprintf("Updated %s — %d/5", result.After.Title, rating))
+		},
+	})
 	return root
 }
 
@@ -248,6 +299,8 @@ func exitCode(err error) int {
 		return 7
 	case errors.Is(err, goodreads.ErrBookNotFound), errors.Is(err, goodreads.ErrBookAmbiguous):
 		return 4
+	case errors.Is(err, goodreads.ErrMutationAmbiguous), errors.Is(err, goodreads.ErrVerificationFailed):
+		return 5
 	case errors.Is(err, goodreads.ErrSessionExpired), errors.Is(err, goodreads.ErrLoginCancelled), errors.Is(err, browser.ErrLaunch):
 		return 3
 	case errors.Is(err, context.DeadlineExceeded):
@@ -275,6 +328,10 @@ func publicError(err error) string {
 		return "No library entry has that exact ISBN."
 	case errors.Is(err, goodreads.ErrBookAmbiguous):
 		return "Multiple library entries have that ISBN; exact edition is ambiguous."
+	case errors.Is(err, goodreads.ErrMutationAmbiguous):
+		return "Goodreads may have changed the book, but the result could not be confirmed; do not retry automatically."
+	case errors.Is(err, goodreads.ErrVerificationFailed):
+		return "Goodreads did not match the requested change after readback."
 	case errors.Is(err, goodreads.ErrSessionExpired):
 		return "Goodreads session expired; run gr login."
 	case errors.Is(err, goodreads.ErrLoginCancelled):

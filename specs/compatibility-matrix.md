@@ -15,9 +15,10 @@ remain gates for login, reads, and mutations.
 | Headed launch, manual sign-in, and saved profile restart | Linux x86-64, Chrome 143.0.7499.40, visible display | User completed Goodreads sign-in in the dedicated profile; a headless restart reached the private library | Pass for this machine/account |
 | Authentication detection | Same | Saved profile reached `/review/list/{account}` with exact `My Books` heading, `#books`, `#booksBody`, and sign-out link; a fresh profile was redirected to `/user/sign_in` without these markers; live `gr status --json` and existing-session `gr login --json` succeeded | Pass for saved-session detection; fresh interactive `gr login` remains untested |
 | Empty private shelf | Same | Authenticated `#books` and `#booksBody` table had zero rows; live `gr library --json --limit 2` and `gr library --shelf currently-reading --json --limit 2` returned `[]` | Pass for empty shelves and shelf navigation |
-| Populated shelf structure | Same, read-only public shelf observation plus invented local fixture | Public page showed `tr[id^='review_']`, book/author links, ISBN columns, rating stars, date columns, and `a.next_page`; public viewer shelf controls differ from owner controls | Partial: populated owner-row parser and pagination are unverified live |
-| Exact ISBN lookup | Synthetic shelf fixtures and empty private shelf | Checksum normalization, exact ISBN-10/13 match, duplicate rejection, and bounded full scan are tested locally; live `gr get` returned not-found with exit code 4 on the empty shelf | Positive live `gr get` on a populated owner shelf pending |
-| Verified mutations and export | Dedicated test account with a test book required | No Goodreads write has been attempted or inferred from the public shelf | Pending |
+| Populated shelf structure | Same | Three owner rows established `div.stars[data-rating]`, five semantic star links, review-edit links, editable date wrappers, core/custom shelf links, and filtered headings such as `My Books: Read (2)`; unfiltered, `read`, and empty `currently-reading` reads passed live | Pass for owner rows and filtered/empty shelf reads; populated pagination remains synthetic |
+| Exact ISBN lookup | Same plus synthetic fixtures | Checksum normalization, exact ISBN-10/13 match, duplicate rejection, and bounded full scan are tested locally; live rows parse exact ISBNs, but one other edition does not render either ISBN | Positive `get` remains fail-closed because the unidentified row prevents proof of a unique full-library match |
+| Verified rating mutation | Same | Owner `div.stars[data-rating]` and the full review textarea were observed without a write; live `rate` verified an idempotent 5, changed 5→4, freshly read rating/status/date/custom shelves/full review, restored 4→5, and a separate shelf read confirmed 5 | Pass for one exact-ISBN book with an empty review; live non-empty-review and post-click ambiguity cases remain pending |
+| Other mutations and export | Dedicated test account and independent flow evidence required | No add/status/finish/review write or export has been attempted | Pending |
 | Rod-managed Chromium fallback | First-run download and compatibility experiment required | Installed-browser resolution is implemented; automatic download is disabled | Pending |
 | macOS and Windows runtime checks | Browser-equipped host or CI runner required | Cross-platform compilation only | Pending |
 
@@ -26,9 +27,10 @@ remain gates for login, reads, and mutations.
 `go run -tags liveprobe ./tools/liveprobe` remains a development-only manual
 sign-in and profile-restart probe. It never reads or enters credentials. The
 authenticated marker is now part of the adapter and has synthetic tests. The
-current private shelf contains no books, so populated owner-row parsing, exact
-ISBN lookup, and Goodreads writes must wait for a suitable test book. Public
-shelf markup is useful structural evidence but cannot validate owner controls.
+current private shelf has a small set of test books. `tools/libraryprobe`
+records owner-row and filtered-heading structure without printing book data;
+`tools/ratingprobe <isbn>` checks the exact target's owner rating control and
+review form without printing the book, review, account, or raw HTML.
 
 Shelf reads return `review` only if a complete review is available; the current
 table parser omits it. Missing dates are JSON `null`. `get` scans at most ten

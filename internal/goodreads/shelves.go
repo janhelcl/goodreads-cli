@@ -14,6 +14,7 @@ import (
 )
 
 var bookPath = regexp.MustCompile(`^/book/show/([0-9]+)(?:[./-]|$)`)
+var filteredLibraryHeading = regexp.MustCompile(`^My Books: (Want to Read|Currently Reading|Read) \([0-9]+\)$`)
 
 type shelfPage struct {
 	Books []domain.Book
@@ -30,7 +31,7 @@ func parseShelfPage(raw string) (shelfPage, error) {
 	}
 	if doc.Find("#books").Length() != 1 || doc.Find("#booksBody").Length() != 1 ||
 		doc.Find("#books th.field.title").Length() != 1 || doc.Find("#books th.field.author").Length() != 1 ||
-		strings.TrimSpace(doc.Find("h1").First().Text()) != "My Books" || doc.Find(signOutCSS).Length() == 0 {
+		!recognizedLibraryHeading(doc.Find("h1").First().Text()) || doc.Find(signOutCSS).Length() == 0 {
 		return shelfPage{}, fmt.Errorf("%w at library.page: required table markers missing", ErrCompatibility)
 	}
 	result := shelfPage{Books: []domain.Book{}}
@@ -55,6 +56,11 @@ func parseShelfPage(raw string) (shelfPage, error) {
 		}
 	}
 	return result, nil
+}
+
+func recognizedLibraryHeading(raw string) bool {
+	normalized := strings.Join(strings.Fields(strings.ReplaceAll(raw, "\u200e", "")), " ")
+	return normalized == "My Books" || filteredLibraryHeading.MatchString(normalized)
 }
 
 func parseShelfRow(row *goquery.Selection) (domain.Book, error) {
@@ -101,11 +107,11 @@ func parseShelfRow(row *goquery.Selection) (domain.Book, error) {
 	if err != nil {
 		return domain.Book{}, err
 	}
-	book.DateRead, err = parseShelfDate(row.Find("td.field.date_read .value").First().Text())
+	book.DateRead, err = parseShelfDate(shelfDateText(row.Find("td.field.date_read")))
 	if err != nil {
 		return domain.Book{}, err
 	}
-	book.DateAdded, err = parseShelfDate(row.Find("td.field.date_added .value").First().Text())
+	book.DateAdded, err = parseShelfDate(shelfDateText(row.Find("td.field.date_added")))
 	if err != nil {
 		return domain.Book{}, err
 	}
@@ -126,6 +132,18 @@ func normalizedISBNField(raw string, isbn10 bool) string {
 func parsePersonalRating(cell *goquery.Selection) (int, error) {
 	if cell.Length() != 1 {
 		return 0, fmt.Errorf("%w at library.row: rating field missing", ErrCompatibility)
+	}
+	interactive := cell.Find("div.stars[data-rating]")
+	if interactive.Length() > 0 {
+		if interactive.Length() != 1 || interactive.Find("a.star").Length() != 5 {
+			return 0, fmt.Errorf("%w at library.row: owner rating control changed", ErrCompatibility)
+		}
+		raw, ok := interactive.Attr("data-rating")
+		rating, err := strconv.ParseFloat(raw, 64)
+		if !ok || err != nil || rating < 0 || rating > 5 || rating != float64(int(rating)) {
+			return 0, fmt.Errorf("%w at library.row: invalid owner rating", ErrCompatibility)
+		}
+		return int(rating), nil
 	}
 	stars := cell.Find("span.staticStars > span.staticStar")
 	if stars.Length() != 5 {
@@ -206,4 +224,14 @@ func parseShelfDate(raw string) (*string, error) {
 		}
 	}
 	return nil, fmt.Errorf("%w at library.row: unrecognized date", ErrCompatibility)
+}
+
+func shelfDateText(cell *goquery.Selection) string {
+	value := cell.Find(".value").First()
+	if value.Length() == 0 {
+		return ""
+	}
+	copy := value.Clone()
+	copy.Find("a,script,style").Remove()
+	return strings.Join(strings.Fields(copy.Text()), " ")
 }

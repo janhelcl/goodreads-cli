@@ -14,6 +14,7 @@ type fakePage struct {
 	html      string
 	selectors map[string]bool
 	text      map[string]bool
+	click     func(string) error
 }
 
 func (p *fakePage) URL(context.Context) (string, error) { return p.url, nil }
@@ -25,6 +26,12 @@ func (p *fakePage) HasText(_ context.Context, selector, regex string) (bool, err
 }
 func (p *fakePage) Close() error                         { return nil }
 func (p *fakePage) HTML(context.Context) (string, error) { return p.html, nil }
+func (p *fakePage) Click(_ context.Context, selector string) error {
+	if p.click != nil {
+		return p.click(selector)
+	}
+	return nil
+}
 
 type fakeBrowser struct {
 	pages      map[string]browser.Page

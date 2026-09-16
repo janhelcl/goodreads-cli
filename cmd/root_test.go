@@ -16,6 +16,7 @@ type authStub struct {
 	status goodreads.ConnectionStatus
 	books  []domain.Book
 	book   domain.Book
+	result domain.MutationResult
 	err    error
 }
 
@@ -33,6 +34,9 @@ func (a authStub) Library(context.Context, domain.LibraryFilter) ([]domain.Book,
 }
 func (a authStub) Get(context.Context, domain.ISBN) (domain.Book, error) {
 	return a.book, a.err
+}
+func (a authStub) Rate(context.Context, domain.ISBN, int) (domain.MutationResult, error) {
+	return a.result, a.err
 }
 
 func TestAuthJSONContracts(t *testing.T) {
@@ -75,6 +79,25 @@ func TestBusyErrorIsSafeAndTyped(t *testing.T) {
 	})
 	if code != 8 || out.Len() != 0 || !strings.Contains(errOut.String(), "profile is busy") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestMutationErrorsAreSafeAndTyped(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{goodreads.ErrMutationAmbiguous, "do not retry automatically"},
+		{&goodreads.VerificationError{Field: "review", Reason: "changed"}, "did not match"},
+	} {
+		var out, errOut bytes.Buffer
+		code := run([]string{"status", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+			return authStub{err: tc.err}, nil
+		})
+		if code != 5 || out.Len() != 0 || !strings.Contains(errOut.String(), tc.want) ||
+			strings.Contains(errOut.String(), "review") {
+			t.Fatalf("err=%v code=%d stdout=%q stderr=%q", tc.err, code, out.String(), errOut.String())
+		}
 	}
 }
 
@@ -124,6 +147,41 @@ func TestGetExactISBNAndErrors(t *testing.T) {
 	})
 	if code != 4 || out.Len() != 0 || !strings.Contains(errOut.String(), "exact ISBN") {
 		t.Fatalf("not found code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRateJSONAndValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"rate", "bad-isbn", "4"},
+		{"rate", "9780142437247", "0"},
+		{"rate", "9780142437247", "six"},
+		{"rate", "9780142437247"},
+	} {
+		var out, errOut bytes.Buffer
+		called := false
+		code := run(args, &out, &errOut, func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		})
+		if code != 2 || called || out.Len() != 0 {
+			t.Fatalf("%v: code=%d called=%t stdout=%q", args, code, called, out.String())
+		}
+	}
+
+	rating := 4
+	result := domain.MutationResult{
+		Operation: "rate",
+		After:     domain.Book{BookID: "42", Title: "Invented Book"},
+		Changes:   domain.BookUpdate{Rating: &rating},
+		Verified:  true,
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"rate", "9780142437247", "4", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{result: result}, nil
+	})
+	want := `{"ok":true,"operation":"rate","isbn13":"9780142437247","book_id":"42","title":"Invented Book","changes":{"rating":4},"verified":true}` + "\n"
+	if code != 0 || out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
 

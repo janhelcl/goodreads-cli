@@ -14,6 +14,8 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/janhelcl/goodreads-cli/internal/browser"
+	"github.com/janhelcl/goodreads-cli/internal/domain"
+	"github.com/janhelcl/goodreads-cli/internal/goodreads"
 	"github.com/janhelcl/goodreads-cli/internal/profile"
 )
 
@@ -36,13 +38,15 @@ func main() {
 	defer b.Close()
 	target := "https://www.goodreads.com/review/list"
 	if len(os.Args) == 2 {
-		id, err := strconv.ParseUint(os.Args[1], 10, 64)
-		if err != nil || id == 0 {
-			fail("expected a numeric public Goodreads user ID")
+		if os.Args[1] != "self" && os.Args[1] != "shelves" {
+			id, err := strconv.ParseUint(os.Args[1], 10, 64)
+			if err != nil || id == 0 {
+				fail(`expected "self", "shelves", or a numeric public Goodreads user ID`)
+			}
+			target += "/" + strconv.FormatUint(id, 10)
 		}
-		target += "/" + strconv.FormatUint(id, 10)
 	} else if len(os.Args) != 1 {
-		fail("expected zero or one public Goodreads user ID")
+		fail(`expected no argument, "self", "shelves", or one public Goodreads user ID`)
 	}
 	p, err := b.NewPage(ctx, target)
 	if err != nil {
@@ -56,6 +60,10 @@ func main() {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		fail("library DOM could not be parsed")
+	}
+	if len(os.Args) == 2 && os.Args[1] == "shelves" {
+		probeShelfMarkers(ctx, b)
+		return
 	}
 	fmt.Println("table_count", doc.Find("#books").Length())
 	fmt.Println("body_count", doc.Find("#booksBody").Length())
@@ -97,9 +105,11 @@ func main() {
 	doc.Find("#booksBody tr").First().ChildrenFiltered("td").Each(func(i int, td *goquery.Selection) {
 		fmt.Printf("field[%d] class=%q divs=%d anchors=%d spans=%d\n", i, td.AttrOr("class", ""), td.Find("div").Length(), td.Find("a").Length(), td.Find("span").Length())
 		if len(os.Args) == 2 && td.HasClass("rating") {
-			td.Find("span").Each(func(j int, span *goquery.Selection) {
-				if j < 8 {
-					fmt.Printf("rating_span[%d] class=%q title=%q aria=%q\n", j, span.AttrOr("class", ""), span.AttrOr("title", ""), span.AttrOr("aria-label", ""))
+			td.Find("*").Each(func(j int, child *goquery.Selection) {
+				if j < 24 {
+					fmt.Printf("rating_node[%d] tag=%q class=%q attrs=%q title=%q aria=%q data_rating=%q\n",
+						j, goquery.NodeName(child), child.AttrOr("class", ""), attributeNames(child),
+						child.AttrOr("title", ""), child.AttrOr("aria-label", ""), child.AttrOr("data-rating", ""))
 				}
 			})
 		}
@@ -118,8 +128,92 @@ func main() {
 		}
 		if len(os.Args) == 2 && (td.HasClass("date_read") || td.HasClass("date_added")) {
 			fmt.Printf("%s_pattern=%q\n", td.AttrOr("class", ""), valuePattern(strings.TrimSpace(td.Find(".value").First().Text())))
+			td.Find("*").Each(func(j int, child *goquery.Selection) {
+				if j < 16 {
+					fmt.Printf("%s_node[%d] tag=%q class=%q attrs=%q\n",
+						td.AttrOr("class", ""), j, goquery.NodeName(child), child.AttrOr("class", ""), attributeNames(child))
+				}
+			})
+		}
+		if len(os.Args) == 2 && (td.HasClass("review") || td.HasClass("actions")) {
+			td.Find("*").Each(func(j int, child *goquery.Selection) {
+				if j < 20 {
+					fmt.Printf("%s_node[%d] tag=%q class=%q attrs=%q route=%q\n",
+						td.AttrOr("class", ""), j, goquery.NodeName(child), child.AttrOr("class", ""),
+						attributeNames(child), routeKind(child.AttrOr("href", "")))
+				}
+			})
 		}
 	})
+	if len(os.Args) == 2 && os.Args[1] == "self" {
+		books, err := goodreads.Library(ctx, b, domain.LibraryFilter{Limit: 20})
+		if err != nil {
+			fmt.Println("production_parser_error", err)
+		} else {
+			fmt.Println("production_parser_count", len(books))
+		}
+		for _, shelf := range []domain.ReadingStatus{domain.StatusToRead, domain.StatusCurrentlyReading, domain.StatusRead} {
+			books, err := goodreads.Library(ctx, b, domain.LibraryFilter{Shelf: shelf, Limit: 20})
+			if err != nil {
+				fmt.Printf("production_shelf_%s_error %v\n", shelf, err)
+			} else {
+				fmt.Printf("production_shelf_%s_count %d\n", shelf, len(books))
+			}
+		}
+	}
+}
+
+func probeShelfMarkers(ctx context.Context, b browser.Browser) {
+	for _, shelf := range []domain.ReadingStatus{domain.StatusToRead, domain.StatusCurrentlyReading, domain.StatusRead} {
+		page, pageErr := b.NewPage(ctx, "https://www.goodreads.com/review/list?shelf="+string(shelf))
+		if pageErr != nil {
+			fmt.Printf("shelf_%s_probe_error navigation\n", shelf)
+			continue
+		}
+		raw, htmlErr := page.HTML(ctx)
+		_ = page.Close()
+		if htmlErr != nil {
+			fmt.Printf("shelf_%s_probe_error DOM\n", shelf)
+			continue
+		}
+		shelfDoc, parseErr := goquery.NewDocumentFromReader(strings.NewReader(raw))
+		if parseErr != nil {
+			fmt.Printf("shelf_%s_probe_error parse\n", shelf)
+			continue
+		}
+		fmt.Printf("shelf_%s_markers heading=%q books=%d body=%d title_header=%d author_header=%d rows=%d\n",
+			shelf, strings.TrimSpace(shelfDoc.Find("h1").First().Text()), shelfDoc.Find("#books").Length(),
+			shelfDoc.Find("#booksBody").Length(), shelfDoc.Find("#books th.field.title").Length(),
+			shelfDoc.Find("#books th.field.author").Length(), shelfDoc.Find("#booksBody > tr").Length())
+	}
+}
+
+func attributeNames(selection *goquery.Selection) string {
+	if selection.Length() == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(selection.Get(0).Attr))
+	for _, attr := range selection.Get(0).Attr {
+		names = append(names, attr.Key)
+	}
+	return strings.Join(names, ",")
+}
+
+func routeKind(href string) string {
+	switch {
+	case strings.Contains(href, "/review/edit"):
+		return "review-edit"
+	case strings.Contains(href, "/review/show"):
+		return "review-show"
+	case strings.Contains(href, "/book/show"):
+		return "book-show"
+	case strings.Contains(href, "/shelf/"):
+		return "shelf"
+	case href != "":
+		return "other"
+	default:
+		return ""
+	}
 }
 
 func valuePattern(value string) string {

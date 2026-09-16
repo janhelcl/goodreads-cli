@@ -2,9 +2,11 @@ package goodreads
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
 )
 
@@ -65,4 +67,76 @@ func TestEmptyShelfTable(t *testing.T) {
 	if err != nil || len(got.Books) != 0 || got.Next != "" {
 		t.Fatalf("empty page=%+v err=%v", got, err)
 	}
+}
+
+func TestRecognizedLibraryHeading(t *testing.T) {
+	for _, heading := range []string{
+		"My Books",
+		"My Books:\n Want to Read\u200e\n (1)",
+		"My Books: Currently Reading (0)",
+		"My Books: Read (20)",
+	} {
+		if !recognizedLibraryHeading(heading) {
+			t.Fatalf("rejected heading %q", heading)
+		}
+	}
+	for _, heading := range []string{"Books", "My Books: Favorites (1)", "My Books: Read", "My Books: Read (many)"} {
+		if recognizedLibraryHeading(heading) {
+			t.Fatalf("accepted heading %q", heading)
+		}
+	}
+}
+
+func TestParseOwnerRatingControl(t *testing.T) {
+	cell := func(rating string, stars int) *goquery.Selection {
+		links := strings.Repeat(`<a class="star off" href="#"></a>`, stars)
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(fmt.Sprintf(
+			`<table><tr><td class="field rating"><div class="value"><div class="stars" data-rating="%s">%s</div></div></td></tr></table>`,
+			rating, links,
+		)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc.Find("td.field.rating")
+	}
+	for _, tc := range []struct {
+		rating string
+		stars  int
+		want   int
+		ok     bool
+	}{
+		{"0.0", 5, 0, true},
+		{"4.0", 5, 4, true},
+		{"4.5", 5, 0, false},
+		{"6.0", 5, 0, false},
+		{"4.0", 4, 0, false},
+	} {
+		got, err := parsePersonalRating(cell(tc.rating, tc.stars))
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Fatalf("rating=%q stars=%d: got=%d err=%v", tc.rating, tc.stars, got, err)
+		}
+	}
+}
+
+func TestShelfDateTextExcludesEditControl(t *testing.T) {
+	for _, tc := range []struct {
+		html string
+		want *string
+	}{
+		{`<td><div class="value"><div class="editable_date"><span class="greyText">Not set</span><a href="#">[edit]</a></div></div></td>`, nil},
+		{`<td><div class="value"><div class="editable_date">Sep 12, 2026 <a href="#">edit</a></div></div></td>`, stringPointer("2026-09-12")},
+	} {
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader("<table><tr>" + tc.html + "</tr></table>"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := parseShelfDate(shelfDateText(doc.Find("td")))
+		if err != nil || !equalOptionalString(got, tc.want) {
+			t.Fatalf("date=%v err=%v want=%v", got, err, tc.want)
+		}
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }

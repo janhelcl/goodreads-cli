@@ -17,6 +17,7 @@ func (p pageStub) Has(context.Context, string) (bool, error)             { retur
 func (p pageStub) HasText(context.Context, string, string) (bool, error) { return true, nil }
 func (p pageStub) Close() error                                          { return nil }
 func (p pageStub) HTML(context.Context) (string, error)                  { return "", nil }
+func (p pageStub) Click(context.Context, string) error                   { return nil }
 
 type browserStub struct{}
 
