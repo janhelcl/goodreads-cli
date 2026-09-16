@@ -18,3 +18,21 @@ The project deliberately keeps Goodreads as the only source of truth. It does no
 CSV export remains an explicit user-facing escape hatch. CSV import/export is not the implementation path for ordinary library reads or mutations.
 
 The implementation contract lives in [`specs/`](specs/README.md). Start there before changing product behavior.
+
+## Implementation status
+
+The dedicated browser profile, OS lock, and Rod launcher are implemented. On a
+Linux machine with Chrome, manual sign-in persisted across a headless restart.
+`gr login`, `status`, `logout`, `library`, and `get <isbn>` are implemented, with
+`--json` output. Authentication and empty-shelf reads passed live; populated
+owner rows and exact ISBN lookup still have only synthetic test coverage. The
+[compatibility matrix](specs/compatibility-matrix.md) records those limits.
+
+For development with Go installed, run `go run . status --json` to check the
+saved session, then `go run . library --json` to read the live shelf. `get`
+accepts an exact ISBN-10 or ISBN-13. `logout` deletes the CLI-owned browser
+profile, including its saved sign-in session.
+
+For now, use an installed Chrome, Chromium, or Edge. `GOODREADS_CLI_BROWSER`
+may point to a supported executable for development; Rod-managed browser
+downloads remain disabled pending the first-run compatibility experiment.

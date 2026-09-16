@@ -51,3 +51,5 @@ After the spike, implement vertical slices:
 ## External integration reference
 
 Goodreads page URLs, DOM structure, accessibility labels, selectors, and success markers are compatibility facts discovered by tests. Centralize them in the adapter and assume they can change without notice.
+
+The current browser spike results and remaining live-account gates are recorded in the [compatibility matrix](compatibility-matrix.md).

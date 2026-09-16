@@ -1,0 +1,188 @@
+package browser
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/janhelcl/goodreads-cli/internal/profile"
+)
+
+func TestOriginPolicy(t *testing.T) {
+	allowed := []string{"https://www.goodreads.com"}
+	for _, raw := range []string{"https://www.goodreads.com/book/show/1", "https://www.goodreads.com:443/review/list"} {
+		if !originAllowed(raw, allowed) {
+			t.Fatalf("rejected %s", raw)
+		}
+	}
+	for _, raw := range []string{"http://www.goodreads.com", "https://www.goodreads.com.evil.example", "file:///etc/passwd", "https://user@www.goodreads.com"} {
+		if originAllowed(raw, allowed) {
+			t.Fatalf("accepted %s", raw)
+		}
+	}
+	for _, raw := range []string{"ws://127.0.0.1:1234/devtools/browser/x", "ws://[::1]:1234/devtools/browser/x"} {
+		if !loopbackControlURL(raw) {
+			t.Fatalf("rejected local CDP URL %s", raw)
+		}
+	}
+	if loopbackControlURL("ws://0.0.0.0:1234/devtools/browser/x") || loopbackControlURL("ws://example.com:1234/devtools/browser/x") {
+		t.Fatal("accepted non-local CDP URL")
+	}
+}
+
+func TestExplicitBrowserValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "browser")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'Google Chrome 123.0'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveExecutable(context.Background(), path)
+	if err != nil || got.Product != "Chrome" || got.Path != path {
+		t.Fatalf("browser: %+v err=%v", got, err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'Other Browser 1.0'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveExecutable(context.Background(), path); err == nil {
+		t.Fatal("accepted unsupported browser")
+	}
+}
+
+func TestBrowserProductPinnedToProfile(t *testing.T) {
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordBrowserProduct(paths.Browser, "Chrome"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordBrowserProduct(paths.Browser, "Chrome"); err != nil {
+		t.Fatalf("same product after upgrade: %v", err)
+	}
+	if err := checkBrowserProduct(paths.Browser, "Chromium"); !errors.Is(err, ErrLaunch) {
+		t.Fatalf("different product was accepted: %v", err)
+	}
+	if err := paths.RemoveBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(productMarkerPath(paths.Browser)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("logout left browser marker: %v", err)
+	}
+}
+
+// This component test is opt-in for machines/CI jobs with a usable Chromium.
+// It exercises the real Rod wrapper against a local page, without credentials.
+func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
+	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
+		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium component test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	lock, err := paths.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	escape := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<html><body>unexpected origin</body></html>")
+	}))
+	defer escape.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/escape" {
+			http.Redirect(w, r, escape.URL, http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/set" {
+			http.SetCookie(w, &http.Cookie{Name: "fixture", Value: "persisted", Path: "/", MaxAge: 3600})
+		}
+		fmt.Fprint(w, "<html><body>fixture</body></html>")
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := LaunchOptions{ProfileDir: paths.Browser, Headless: true, AllowedOrigins: []string{u.Scheme + "://" + u.Host}}
+	factory := RodFactory{}
+	first, err := factory.Launch(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := first.NewPage(ctx, server.URL+"/set")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	immediate, err := page.(*rodPage).rod.Eval("() => document.cookie")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if immediate.Value.String() != "fixture=persisted" {
+		_ = first.Close()
+		t.Fatalf("initial cookie missing: %q", immediate.Value.String())
+	}
+	_ = page.Close()
+	if _, err := first.NewPage(ctx, server.URL+"/escape"); !errors.Is(err, ErrOrigin) {
+		_ = first.Close()
+		t.Fatalf("redirect error: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := factory.Launch(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	page, err = second.NewPage(ctx, server.URL+"/check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	value, err := page.(*rodPage).rod.Eval("() => document.cookie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Value.String() != "fixture=persisted" {
+		t.Fatalf("profile cookie did not persist: %q", value.Value.String())
+	}
+}
+
+func TestRodCancellationStopsBrowser(t *testing.T) {
+	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
+		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium component test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := (RodFactory{}).Launch(ctx, LaunchOptions{ProfileDir: paths.Browser, Headless: true})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	pid := b.(*rodBrowser).launcher.PID()
+	cancel()
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer checkCancel()
+	if err := waitProcessExit(checkCtx, pid); err != nil {
+		t.Fatalf("browser survived cancellation: %v", err)
+	}
+}
