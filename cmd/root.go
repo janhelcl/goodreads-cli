@@ -19,12 +19,14 @@ import (
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
 	"github.com/janhelcl/goodreads-cli/internal/goodreads"
+	internalmcp "github.com/janhelcl/goodreads-cli/internal/mcp"
 	"github.com/janhelcl/goodreads-cli/internal/profile"
 )
 
 var errUsage = errors.New("invalid command usage")
 
 type authFactory func(headed bool) (app.Service, error)
+type mcpRunner func(context.Context, app.Service, internalmcp.Options) error
 
 type mutationOutput struct {
 	OK        bool              `json:"ok"`
@@ -55,7 +57,17 @@ func run(args []string, out, errOut io.Writer, factory authFactory) int {
 }
 
 func runContext(ctx context.Context, args []string, out, errOut io.Writer, factory authFactory) int {
-	root := newRoot(out, errOut, factory)
+	return runContextWithMCP(ctx, args, out, errOut, factory, internalmcp.Run)
+}
+
+func runContextWithMCP(
+	ctx context.Context,
+	args []string,
+	out, errOut io.Writer,
+	factory authFactory,
+	runMCP mcpRunner,
+) int {
+	root := newRootWithMCP(out, errOut, factory, runMCP)
 	root.SetContext(ctx)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
@@ -69,6 +81,10 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer, facto
 }
 
 func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
+	return newRootWithMCP(out, errOut, factory, internalmcp.Run)
+}
+
+func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner) *cobra.Command {
 	var jsonOutput bool
 	var headed bool
 	var debug bool
@@ -536,6 +552,18 @@ func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
 	export.Flags().StringVar(&exportOut, "out", "", "write the CSV to this path")
 	export.Flags().BoolVar(&exportForce, "force", false, "replace an existing regular file")
 	root.AddCommand(export)
+	root.AddCommand(&cobra.Command{
+		Use:   "mcp",
+		Short: "Run the local Goodreads MCP server over stdio",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			service, err := factory(headed)
+			if err != nil {
+				return err
+			}
+			return runMCP(cmd.Context(), service, internalmcp.Options{Timeout: timeout})
+		},
+	})
 	return root
 }
 

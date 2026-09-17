@@ -28,15 +28,19 @@ mutations `add <isbn>`, `start <isbn>`, `finish <isbn>`, and
 `rate <isbn> <rating>`, and `review <isbn>` are implemented with `--json`
 output. `gr export` generates a fresh Goodreads CSV, validates the browser
 download, and either writes it to stdout or atomically installs `--out`.
+`gr mcp` runs a local stdio MCP server exposing the same live reads and
+verified mutations through semantic tools; login remains a separate
+interactive CLI command.
 Authentication, populated/filtered shelf reads, and reversible live canaries
 for add, status, rating, finish date, and review passed. Exact lookup remains
 fail-closed when any scanned row omits its ISBN. The
 [compatibility matrix](specs/compatibility-matrix.md) records the tested scope
 and remaining gates.
 
-For development with Go installed, run `go run . status --json` to check the
-saved session, then `go run . library --json` to read the live shelf. `get` and
-`rate` accept an exact ISBN-10 or ISBN-13; ratings must be 1 through 5.
+For development with Go 1.25 or newer installed, run
+`go run . status --json` to check the saved session, then
+`go run . library --json` to read the live shelf. `get` and `rate` accept an
+exact ISBN-10 or ISBN-13; ratings must be 1 through 5.
 `start` sets an exact library edition to `currently-reading`. `logout` deletes
 the CLI-owned browser profile, including its saved sign-in session. `finish`
 sets `read`, records `--date YYYY-MM-DD` (defaulting to today), and optionally
@@ -46,6 +50,11 @@ sets `--rating 1..5`; every requested field is read back before success.
 the complete saved text without including review contents in errors.
 `export --out library.csv` refuses to replace an existing file unless
 `--force` is explicit; JSON mode requires `--out`.
+
+Run `go run . mcp` from an MCP client configuration after `gr login`. The
+server exposes `get_library`, `get_book`, `add_book`, `start_reading`,
+`finish_reading`, `rate_book`, and `review_book`; it serializes tool calls and
+returns safe typed errors when authentication or compatibility fails.
 
 For now, use an installed Chrome, Chromium, or Edge. `GOODREADS_CLI_BROWSER`
 may point to a supported executable for development; Rod-managed browser

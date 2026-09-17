@@ -11,6 +11,7 @@ import (
 	"github.com/janhelcl/goodreads-cli/internal/app"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
 	"github.com/janhelcl/goodreads-cli/internal/goodreads"
+	internalmcp "github.com/janhelcl/goodreads-cli/internal/mcp"
 	"github.com/janhelcl/goodreads-cli/internal/profile"
 )
 
@@ -450,6 +451,52 @@ func TestExportOutputJSONAndValidation(t *testing.T) {
 	})
 	if code != 2 || out.Len() != 0 || !strings.Contains(errOut.String(), "use --force") {
 		t.Fatalf("existing export code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestMCPCommandWiresServiceAndGlobalOptions(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var gotService app.Service
+	var gotOptions internalmcp.Options
+	headed := false
+	code := runContextWithMCP(
+		context.Background(),
+		[]string{"mcp", "--headed", "--timeout", "3s"},
+		&out,
+		&errOut,
+		func(value bool) (app.Service, error) {
+			headed = value
+			return authStub{}, nil
+		},
+		func(_ context.Context, service app.Service, options internalmcp.Options) error {
+			gotService = service
+			gotOptions = options
+			return nil
+		},
+	)
+	if code != 0 || out.Len() != 0 || errOut.Len() != 0 || !headed ||
+		gotService == nil || gotOptions.Timeout != 3*time.Second {
+		t.Fatalf("code=%d stdout=%q stderr=%q headed=%t service=%T timeout=%s",
+			code, out.String(), errOut.String(), headed, gotService, gotOptions.Timeout)
+	}
+
+	called := false
+	code = runContextWithMCP(
+		context.Background(),
+		[]string{"mcp", "extra"},
+		&out,
+		&errOut,
+		func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		},
+		func(context.Context, app.Service, internalmcp.Options) error {
+			called = true
+			return nil
+		},
+	)
+	if code != 2 || called {
+		t.Fatalf("invalid mcp usage code=%d called=%t", code, called)
 	}
 }
 
