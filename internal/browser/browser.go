@@ -112,6 +112,7 @@ type LaunchOptions struct {
 	ProfileDir       string
 	Headless         bool
 	BrowserPath      string
+	DownloadDir      string
 	AllowedOrigins   []string // tests may add a local origin; production defaults to Goodreads
 	InteractiveLogin bool     // provider navigation is user-controlled in headed login
 }
@@ -125,6 +126,12 @@ type Browser interface {
 	Close() error
 }
 
+type Download struct {
+	URL               string
+	SuggestedFilename string
+	Path              string
+}
+
 type Page interface {
 	URL(ctx context.Context) (string, error)
 	Has(ctx context.Context, selector string) (bool, error)
@@ -133,6 +140,7 @@ type Page interface {
 	Click(ctx context.Context, selector string) error
 	ClickAndWaitForRequest(ctx context.Context, selector string) error
 	ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, selector string) error
+	ClickAndWaitForDownload(ctx context.Context, selector string) (Download, error)
 	Input(ctx context.Context, selector, value string) error
 	SelectValue(ctx context.Context, selector, value string) error
 	Value(ctx context.Context, selector string) (string, error)
@@ -151,6 +159,13 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 	}
 	if opts.InteractiveLogin && opts.Headless {
 		return nil, fmt.Errorf("interactive login requires a headed browser")
+	}
+	if opts.DownloadDir != "" {
+		info, err := os.Lstat(opts.DownloadDir)
+		if err != nil || !filepath.IsAbs(opts.DownloadDir) || !info.IsDir() ||
+			info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+			return nil, fmt.Errorf("browser download directory is missing or unsafe")
+		}
 	}
 	exe, err := ResolveExecutable(ctx, opts.BrowserPath)
 	if err != nil {
@@ -184,7 +199,10 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 	if len(allowed) == 0 {
 		allowed = []string{"https://www.goodreads.com", "https://goodreads.com"}
 	}
-	b := &rodBrowser{rod: r, launcher: l, allowed: allowed, login: opts.InteractiveLogin}
+	b := &rodBrowser{
+		rod: r, launcher: l, allowed: allowed, login: opts.InteractiveLogin,
+		downloadDir: opts.DownloadDir,
+	}
 	b.stopCancellation = context.AfterFunc(ctx, func() { _ = b.Close() })
 	if err := recordBrowserProduct(opts.ProfileDir, exe.Product); err != nil {
 		_ = b.Close()
@@ -256,6 +274,7 @@ type rodBrowser struct {
 	launcher         *launcher.Launcher
 	allowed          []string
 	login            bool
+	downloadDir      string
 	stopCancellation func() bool
 	closeOnce        sync.Once
 	closeErr         error
@@ -269,7 +288,7 @@ func (b *rodBrowser) NewPage(ctx context.Context, targetURL string) (Page, error
 	if err != nil {
 		return nil, err
 	}
-	page := &rodPage{rod: p, allowed: b.allowed, login: b.login}
+	page := &rodPage{rod: p, allowed: b.allowed, login: b.login, downloadDir: b.downloadDir}
 	if err := p.Context(ctx).WaitLoad(); err != nil {
 		_ = p.Close()
 		return nil, err
@@ -302,9 +321,10 @@ func (b *rodBrowser) Close() error {
 }
 
 type rodPage struct {
-	rod     *rod.Page
-	allowed []string
-	login   bool
+	rod         *rod.Page
+	allowed     []string
+	login       bool
+	downloadDir string
 }
 
 func (p *rodPage) URL(ctx context.Context) (string, error) {
@@ -496,6 +516,43 @@ func (p *rodPage) ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, se
 		return fmt.Errorf("browser request failed")
 	}
 	return nil
+}
+
+func (p *rodPage) ClickAndWaitForDownload(ctx context.Context, selector string) (Download, error) {
+	if p.downloadDir == "" {
+		return Download{}, fmt.Errorf("browser download directory is not configured")
+	}
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err == nil {
+		err = element.ScrollIntoView()
+	}
+	if err != nil {
+		return Download{}, err
+	}
+	eventCtx, cancel := context.WithCancel(ctx)
+	wait := p.rod.Browser().Context(eventCtx).WaitDownload(p.downloadDir)
+	if err := element.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		cancel()
+		wait()
+		return Download{}, err
+	}
+	info := wait()
+	cancel()
+	if ctx.Err() != nil {
+		return Download{}, ctx.Err()
+	}
+	if info == nil || info.GUID == "" || filepath.Base(info.GUID) != info.GUID {
+		return Download{}, fmt.Errorf("download did not produce a safe file")
+	}
+	if !originAllowed(info.URL, p.allowed) {
+		return Download{}, ErrOrigin
+	}
+	path := filepath.Join(p.downloadDir, info.GUID)
+	fileInfo, err := os.Lstat(path)
+	if err != nil || !fileInfo.Mode().IsRegular() || fileInfo.Mode()&os.ModeSymlink != 0 {
+		return Download{}, fmt.Errorf("download did not produce a regular file")
+	}
+	return Download{URL: info.URL, SuggestedFilename: info.SuggestedFilename, Path: path}, nil
 }
 
 func (p *rodPage) Input(ctx context.Context, selector, value string) error {

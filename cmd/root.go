@@ -503,6 +503,39 @@ func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
 	review.Flags().StringVar(&reviewFile, "file", "", "read review text from a file")
 	review.Flags().BoolVar(&clearReview, "clear", false, "explicitly clear the review")
 	root.AddCommand(review)
+	var exportOut string
+	var exportForce bool
+	export := &cobra.Command{
+		Use:   "export",
+		Short: "Generate and download a fresh Goodreads CSV export",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if jsonOutput && exportOut == "" {
+				return fmt.Errorf("%w: --json requires --out for export", errUsage)
+			}
+			if exportForce && exportOut == "" {
+				return fmt.Errorf("%w: --force requires --out", errUsage)
+			}
+			service, err := factory(headed)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := newContext(cmd, 10*time.Minute)
+			defer cancel()
+			result, err := service.Export(ctx, exportOut, exportForce)
+			if err != nil {
+				return err
+			}
+			if exportOut == "" {
+				_, err = cmd.OutOrStdout().Write(result.Data)
+				return err
+			}
+			return write(cmd, result, fmt.Sprintf("Exported Goodreads library to %s", result.Path))
+		},
+	}
+	export.Flags().StringVar(&exportOut, "out", "", "write the CSV to this path")
+	export.Flags().BoolVar(&exportForce, "force", false, "replace an existing regular file")
+	root.AddCommand(export)
 	return root
 }
 
@@ -512,7 +545,8 @@ func exitCode(err error) int {
 		return 2
 	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrInvalidRating),
 		errors.Is(err, domain.ErrInvalidDate), errors.Is(err, domain.ErrInvalidLimit),
-		errors.Is(err, domain.ErrInvalidReview):
+		errors.Is(err, domain.ErrInvalidReview), errors.Is(err, domain.ErrExportDestination),
+		errors.Is(err, domain.ErrExportExists):
 		return 2
 	case errors.Is(err, profile.ErrBusy):
 		return 8
@@ -527,6 +561,8 @@ func exitCode(err error) int {
 	case errors.Is(err, goodreads.ErrSessionExpired), errors.Is(err, goodreads.ErrLoginCancelled), errors.Is(err, browser.ErrLaunch):
 		return 3
 	case errors.Is(err, context.DeadlineExceeded):
+		return 6
+	case errors.Is(err, goodreads.ErrExportFailed):
 		return 6
 	default:
 		return 1
@@ -559,6 +595,12 @@ func publicError(err error) string {
 		return "Goodreads session expired; run gr login."
 	case errors.Is(err, goodreads.ErrLoginCancelled):
 		return "Goodreads login was cancelled or timed out."
+	case errors.Is(err, domain.ErrExportExists):
+		return "Export destination already exists; use --force to replace it."
+	case errors.Is(err, domain.ErrExportDestination):
+		return "Invalid export destination."
+	case errors.Is(err, goodreads.ErrExportFailed):
+		return "Goodreads could not generate or download a valid export."
 	case errors.Is(err, context.DeadlineExceeded):
 		return "Goodreads operation timed out."
 	default:

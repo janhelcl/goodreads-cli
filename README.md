@@ -26,7 +26,8 @@ Linux machine with Chrome, manual sign-in persisted across a headless restart.
 `gr login`, `status`, `logout`, `library`, `get <isbn>`, and the verified
 mutations `add <isbn>`, `start <isbn>`, `finish <isbn>`, and
 `rate <isbn> <rating>`, and `review <isbn>` are implemented with `--json`
-output.
+output. `gr export` generates a fresh Goodreads CSV, validates the browser
+download, and either writes it to stdout or atomically installs `--out`.
 Authentication, populated/filtered shelf reads, and reversible live canaries
 for add, status, rating, finish date, and review passed. Exact lookup remains
 fail-closed when any scanned row omits its ISBN. The
@@ -43,6 +44,8 @@ sets `--rating 1..5`; every requested field is read back before success.
 `add` defaults to `to-read` and accepts `--shelf currently-reading|read`.
 `review` requires exactly one of `--text`, `--file`, or `--clear` and verifies
 the complete saved text without including review contents in errors.
+`export --out library.csv` refuses to replace an existing file unless
+`--force` is explicit; JSON mode requires `--out`.
 
 For now, use an installed Chrome, Chromium, or Edge. `GOODREADS_CLI_BROWSER`
 may point to a supported executable for development; Rod-managed browser

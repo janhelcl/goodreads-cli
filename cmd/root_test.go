@@ -15,12 +15,15 @@ import (
 )
 
 type authStub struct {
-	status goodreads.ConnectionStatus
-	books  []domain.Book
-	book   domain.Book
-	result domain.MutationResult
-	err    error
-	wait   bool
+	status      goodreads.ConnectionStatus
+	books       []domain.Book
+	book        domain.Book
+	result      domain.MutationResult
+	export      domain.ExportResult
+	exportOut   *string
+	exportForce *bool
+	err         error
+	wait        bool
 }
 
 func (a authStub) Login(context.Context) (goodreads.ConnectionStatus, error) {
@@ -56,6 +59,15 @@ func (a authStub) Finish(context.Context, domain.ISBN, time.Time, *int) (domain.
 }
 func (a authStub) Review(context.Context, domain.ISBN, *string) (domain.MutationResult, error) {
 	return a.result, a.err
+}
+func (a authStub) Export(_ context.Context, destination string, force bool) (domain.ExportResult, error) {
+	if a.exportOut != nil {
+		*a.exportOut = destination
+	}
+	if a.exportForce != nil {
+		*a.exportForce = force
+	}
+	return a.export, a.err
 }
 
 func TestAuthJSONContracts(t *testing.T) {
@@ -384,6 +396,60 @@ func TestReviewJSONFileClearAndValidation(t *testing.T) {
 	})
 	if code != 0 || !strings.Contains(out.String(), `"review":""`) || errOut.Len() != 0 {
 		t.Fatalf("clear review code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestExportOutputJSONAndValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"export", "--json"},
+		{"export", "--force"},
+		{"export", "extra"},
+	} {
+		var out, errOut bytes.Buffer
+		called := false
+		code := run(args, &out, &errOut, func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		})
+		if code != 2 || called || out.Len() != 0 {
+			t.Fatalf("%v: code=%d called=%t stdout=%q stderr=%q", args, code, called, out.String(), errOut.String())
+		}
+	}
+
+	csv := []byte("Book Id,Title\n1,Fixture\n")
+	var out, errOut bytes.Buffer
+	code := run([]string{"export"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{export: domain.ExportResult{OK: true, Bytes: int64(len(csv)), Data: csv}}, nil
+	})
+	if code != 0 || out.String() != string(csv) || errOut.Len() != 0 {
+		t.Fatalf("stdout export code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	var destination string
+	var force bool
+	code = run([]string{"export", "--out", "library.csv", "--force", "--json"}, &out, &errOut,
+		func(bool) (app.Service, error) {
+			return authStub{
+				export:    domain.ExportResult{OK: true, Path: "library.csv", Bytes: 123},
+				exportOut: &destination, exportForce: &force,
+			}, nil
+		})
+	want := "{\"ok\":true,\"path\":\"library.csv\",\"bytes\":123}\n"
+	if code != 0 || out.String() != want || errOut.Len() != 0 ||
+		destination != "library.csv" || !force {
+		t.Fatalf("JSON export code=%d stdout=%q stderr=%q destination=%q force=%t",
+			code, out.String(), errOut.String(), destination, force)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = run([]string{"export", "--out", "library.csv"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{err: domain.ErrExportExists}, nil
+	})
+	if code != 2 || out.Len() != 0 || !strings.Contains(errOut.String(), "use --force") {
+		t.Fatalf("existing export code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
 

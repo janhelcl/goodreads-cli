@@ -113,6 +113,16 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 			fmt.Fprint(w, `<html><body><textarea id="review">existing text</textarea></body></html>`)
 			return
 		}
+		if r.URL.Path == "/download" {
+			fmt.Fprint(w, `<html><body><a id="export" href="/library.csv">download</a></body></html>`)
+			return
+		}
+		if r.URL.Path == "/library.csv" {
+			w.Header().Set("Content-Disposition", `attachment; filename="library.csv"`)
+			w.Header().Set("Content-Type", "text/csv")
+			fmt.Fprint(w, "Book Id,Title\n1,Fixture\n")
+			return
+		}
 		if r.URL.Path == "/request" {
 			fmt.Fprint(w, `<html><body>
 				<button id="mutate" onclick="fetch('/mutation', {method: 'POST'})">mutate</button>
@@ -139,7 +149,14 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := LaunchOptions{ProfileDir: paths.Browser, Headless: true, AllowedOrigins: []string{u.Scheme + "://" + u.Host}}
+	downloadDir := t.TempDir()
+	if err := os.Chmod(downloadDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	opts := LaunchOptions{
+		ProfileDir: paths.Browser, Headless: true, DownloadDir: downloadDir,
+		AllowedOrigins: []string{u.Scheme + "://" + u.Host},
+	}
 	factory := RodFactory{}
 	first, err := factory.Launch(ctx, opts)
 	if err != nil {
@@ -232,6 +249,23 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 		t.Fatalf("cleared value=%q err=%v", entered, err)
 	}
 	_ = inputPage.Close()
+	downloadPage, err := first.NewPage(ctx, server.URL+"/download")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	download, err := downloadPage.ClickAndWaitForDownload(ctx, "#export")
+	_ = downloadPage.Close()
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(download.Path)
+	if err != nil || download.SuggestedFilename != "library.csv" ||
+		string(content) != "Book Id,Title\n1,Fixture\n" {
+		_ = first.Close()
+		t.Fatalf("download=%+v content=%q err=%v", download, string(content), err)
+	}
 	if _, err := first.NewPage(ctx, server.URL+"/escape"); !errors.Is(err, ErrOrigin) {
 		_ = first.Close()
 		t.Fatalf("redirect error: %v", err)

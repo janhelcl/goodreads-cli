@@ -15,6 +15,8 @@ type fakePage struct {
 	selectors map[string]bool
 	text      map[string]bool
 	click     func(string) error
+	download  func(string) (browser.Download, error)
+	htmlFunc  func() string
 	input     func(string, string) error
 	selectVal func(string, string) error
 	value     func(string) (string, error)
@@ -27,8 +29,13 @@ func (p *fakePage) Has(_ context.Context, selector string) (bool, error) {
 func (p *fakePage) HasText(_ context.Context, selector, regex string) (bool, error) {
 	return p.text[selector+"|"+regex], nil
 }
-func (p *fakePage) Close() error                         { return nil }
-func (p *fakePage) HTML(context.Context) (string, error) { return p.html, nil }
+func (p *fakePage) Close() error { return nil }
+func (p *fakePage) HTML(context.Context) (string, error) {
+	if p.htmlFunc != nil {
+		return p.htmlFunc(), nil
+	}
+	return p.html, nil
+}
 func (p *fakePage) Click(_ context.Context, selector string) error {
 	if p.click != nil {
 		return p.click(selector)
@@ -40,6 +47,12 @@ func (p *fakePage) ClickAndWaitForRequest(ctx context.Context, selector string) 
 }
 func (p *fakePage) ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, selector string) error {
 	return p.Click(ctx, selector)
+}
+func (p *fakePage) ClickAndWaitForDownload(_ context.Context, selector string) (browser.Download, error) {
+	if p.download != nil {
+		return p.download(selector)
+	}
+	return browser.Download{}, nil
 }
 func (p *fakePage) Input(_ context.Context, selector, value string) error {
 	if p.input != nil {

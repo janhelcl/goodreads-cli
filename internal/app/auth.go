@@ -25,6 +25,7 @@ type Service interface {
 	Start(context.Context, domain.ISBN) (domain.MutationResult, error)
 	Finish(context.Context, domain.ISBN, time.Time, *int) (domain.MutationResult, error)
 	Review(context.Context, domain.ISBN, *string) (domain.MutationResult, error)
+	Export(context.Context, string, bool) (domain.ExportResult, error)
 }
 
 type LogoutResult struct {
