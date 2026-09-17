@@ -25,11 +25,13 @@ The dedicated browser profile, OS lock, and Rod launcher are implemented. On a
 Linux machine with Chrome, manual sign-in persisted across a headless restart.
 `gr login`, `status`, `logout`, `library`, `get <isbn>`, and the verified
 mutations `add <isbn>`, `start <isbn>`, `finish <isbn>`, and
-`rate <isbn> <rating>` are implemented with `--json` output.
-Authentication, populated/filtered shelf reads, and one reversible rating
-canary passed live. Exact lookup remains fail-closed when any scanned row omits
-its ISBN. The [compatibility matrix](specs/compatibility-matrix.md) records the
-tested scope and remaining gates.
+`rate <isbn> <rating>`, and `review <isbn>` are implemented with `--json`
+output.
+Authentication, populated/filtered shelf reads, and reversible live canaries
+for add, status, rating, finish date, and review passed. Exact lookup remains
+fail-closed when any scanned row omits its ISBN. The
+[compatibility matrix](specs/compatibility-matrix.md) records the tested scope
+and remaining gates.
 
 For development with Go installed, run `go run . status --json` to check the
 saved session, then `go run . library --json` to read the live shelf. `get` and
@@ -39,6 +41,8 @@ the CLI-owned browser profile, including its saved sign-in session. `finish`
 sets `read`, records `--date YYYY-MM-DD` (defaulting to today), and optionally
 sets `--rating 1..5`; every requested field is read back before success.
 `add` defaults to `to-read` and accepts `--shelf currently-reading|read`.
+`review` requires exactly one of `--text`, `--file`, or `--clear` and verifies
+the complete saved text without including review contents in errors.
 
 For now, use an installed Chrome, Chromium, or Edge. `GOODREADS_CLI_BROWSER`
 may point to a supported executable for development; Rod-managed browser

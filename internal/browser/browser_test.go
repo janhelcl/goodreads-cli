@@ -109,6 +109,10 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 			fmt.Fprint(w, `<html><body><select id="year"><option>Year</option><option>2026</option></select></body></html>`)
 			return
 		}
+		if r.URL.Path == "/input" {
+			fmt.Fprint(w, `<html><body><textarea id="review">existing text</textarea></body></html>`)
+			return
+		}
 		if r.URL.Path == "/request" {
 			fmt.Fprint(w, `<html><body>
 				<button id="mutate" onclick="fetch('/mutation', {method: 'POST'})">mutate</button>
@@ -202,6 +206,32 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 		t.Fatalf("selected value=%q err=%v", selected, err)
 	}
 	_ = selectPage.Close()
+	inputPage, err := first.NewPage(ctx, server.URL+"/input")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if err := inputPage.Input(ctx, "#review", "replacement ✓"); err != nil {
+		_ = inputPage.Close()
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if entered, err := inputPage.Value(ctx, "#review"); err != nil || entered != "replacement ✓" {
+		_ = inputPage.Close()
+		_ = first.Close()
+		t.Fatalf("replacement value=%q err=%v", entered, err)
+	}
+	if err := inputPage.Input(ctx, "#review", ""); err != nil {
+		_ = inputPage.Close()
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if entered, err := inputPage.Value(ctx, "#review"); err != nil || entered != "" {
+		_ = inputPage.Close()
+		_ = first.Close()
+		t.Fatalf("cleared value=%q err=%v", entered, err)
+	}
+	_ = inputPage.Close()
 	if _, err := first.NewPage(ctx, server.URL+"/escape"); !errors.Is(err, ErrOrigin) {
 		_ = first.Close()
 		t.Fatalf("redirect error: %v", err)

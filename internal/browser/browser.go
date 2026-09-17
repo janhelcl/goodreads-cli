@@ -506,6 +506,9 @@ func (p *rodPage) Input(ctx context.Context, selector, value string) error {
 	if err := element.ScrollIntoView(); err != nil {
 		return err
 	}
+	if err := element.SelectAllText(); err != nil {
+		return err
+	}
 	return element.Input(value)
 }
 

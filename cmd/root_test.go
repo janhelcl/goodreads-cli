@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,9 @@ func (a authStub) Start(context.Context, domain.ISBN) (domain.MutationResult, er
 	return a.result, a.err
 }
 func (a authStub) Finish(context.Context, domain.ISBN, time.Time, *int) (domain.MutationResult, error) {
+	return a.result, a.err
+}
+func (a authStub) Review(context.Context, domain.ISBN, *string) (domain.MutationResult, error) {
 	return a.result, a.err
 }
 
@@ -320,6 +324,66 @@ func TestFinishJSONAndValidation(t *testing.T) {
 	want := `{"ok":true,"operation":"finish","isbn13":"9780142437247","book_id":"42","title":"Invented Book","changes":{"status":"read","rating":4,"date_read":"2026-09-17"},"verified":true}` + "\n"
 	if code != 0 || out.String() != want || errOut.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestReviewJSONFileClearAndValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"review", "bad-isbn", "--text", "good"},
+		{"review", "9780142437247"},
+		{"review", "9780142437247", "--text", "one", "--clear"},
+		{"review", "9780142437247", "--text", ""},
+		{"review", "9780142437247", "--file", "missing-review.txt"},
+	} {
+		var out, errOut bytes.Buffer
+		called := false
+		code := run(args, &out, &errOut, func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		})
+		if code != 2 || called || out.Len() != 0 {
+			t.Fatalf("%v: code=%d called=%t stdout=%q stderr=%q", args, code, called, out.String(), errOut.String())
+		}
+	}
+
+	wanted := "A precise review."
+	result := domain.MutationResult{
+		Operation: "review",
+		After:     domain.Book{BookID: "42", Title: "Invented Book"},
+		Changes:   domain.BookUpdate{Review: &wanted},
+		Verified:  true,
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"review", "9780142437247", "--text", wanted, "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{result: result}, nil
+	})
+	want := `{"ok":true,"operation":"review","isbn13":"9780142437247","book_id":"42","title":"Invented Book","changes":{"review":"A precise review."},"verified":true}` + "\n"
+	if code != 0 || out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+
+	path := t.TempDir() + "/review.md"
+	if err := os.WriteFile(path, []byte(wanted), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errOut.Reset()
+	code = run([]string{"review", "9780142437247", "--file", path}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{result: result}, nil
+	})
+	if code != 0 || !strings.Contains(out.String(), "review saved") || errOut.Len() != 0 {
+		t.Fatalf("file review code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+
+	empty := ""
+	result.Changes.Review = &empty
+	out.Reset()
+	errOut.Reset()
+	code = run([]string{"review", "9780142437247", "--clear", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{result: result}, nil
+	})
+	if code != 0 || !strings.Contains(out.String(), `"review":""`) || errOut.Len() != 0 {
+		t.Fatalf("clear review code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
 

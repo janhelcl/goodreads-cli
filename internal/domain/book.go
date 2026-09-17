@@ -18,6 +18,7 @@ var (
 	ErrInvalidRating = errors.New("invalid rating")
 	ErrInvalidDate   = errors.New("invalid date")
 	ErrInvalidLimit  = errors.New("invalid library limit")
+	ErrInvalidReview = errors.New("invalid review")
 )
 
 func (s ReadingStatus) Valid() bool {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -429,6 +430,79 @@ func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
 			return write(cmd, output, fmt.Sprintf("Updated %s — %d/5", result.After.Title, rating))
 		},
 	})
+	var reviewText string
+	var reviewFile string
+	var clearReview bool
+	review := &cobra.Command{
+		Use:   "review <isbn>",
+		Short: "Set, replace, or explicitly clear a book review",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("%w: review requires one ISBN", errUsage)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			isbn, err := domain.NormalizeISBN(args[0])
+			if err != nil {
+				return fmt.Errorf("%w: %v", errUsage, err)
+			}
+			choices := 0
+			if cmd.Flags().Changed("text") {
+				choices++
+			}
+			if cmd.Flags().Changed("file") {
+				choices++
+			}
+			if clearReview {
+				choices++
+			}
+			if choices != 1 {
+				return fmt.Errorf("%w: exactly one of --text, --file, or --clear is required", errUsage)
+			}
+			desired := reviewText
+			if reviewFile != "" {
+				content, err := os.ReadFile(reviewFile)
+				if err != nil {
+					return fmt.Errorf("%w: could not read --file", errUsage)
+				}
+				desired = string(content)
+			}
+			if clearReview {
+				desired = ""
+			} else if strings.TrimSpace(desired) == "" {
+				return fmt.Errorf("%w: an empty review requires --clear", errUsage)
+			}
+			service, err := factory(headed)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := newContext(cmd, 2*time.Minute)
+			defer cancel()
+			result, err := service.Review(ctx, isbn, &desired)
+			if err != nil {
+				return err
+			}
+			output := mutationOutput{
+				OK:        true,
+				Operation: result.Operation,
+				ISBN13:    isbn.ISBN13,
+				BookID:    result.After.BookID,
+				Title:     result.After.Title,
+				Changes:   result.Changes,
+				Verified:  result.Verified,
+			}
+			human := fmt.Sprintf("Updated %s — review saved", result.After.Title)
+			if clearReview {
+				human = fmt.Sprintf("Updated %s — review cleared", result.After.Title)
+			}
+			return write(cmd, output, human)
+		},
+	}
+	review.Flags().StringVar(&reviewText, "text", "", "review text")
+	review.Flags().StringVar(&reviewFile, "file", "", "read review text from a file")
+	review.Flags().BoolVar(&clearReview, "clear", false, "explicitly clear the review")
+	root.AddCommand(review)
 	return root
 }
 
@@ -437,7 +511,8 @@ func exitCode(err error) int {
 	case errors.Is(err, errUsage):
 		return 2
 	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrInvalidRating),
-		errors.Is(err, domain.ErrInvalidDate), errors.Is(err, domain.ErrInvalidLimit):
+		errors.Is(err, domain.ErrInvalidDate), errors.Is(err, domain.ErrInvalidLimit),
+		errors.Is(err, domain.ErrInvalidReview):
 		return 2
 	case errors.Is(err, profile.ErrBusy):
 		return 8

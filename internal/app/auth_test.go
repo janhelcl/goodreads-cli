@@ -100,3 +100,22 @@ func TestAddRejectsInvalidStatusBeforeProfileOrBrowserWork(t *testing.T) {
 		t.Fatalf("profile path created for invalid status: %v", err)
 	}
 }
+
+func TestReviewRejectsOmittedValueBeforeProfileOrBrowserWork(t *testing.T) {
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	factory := &factoryStub{}
+	auth := Auth{Factory: factory, Paths: paths}
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Review(context.Background(), isbn, nil); !errors.Is(err, domain.ErrInvalidReview) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(factory.calls) != 0 {
+		t.Fatalf("browser launched for omitted review: %+v", factory.calls)
+	}
+	if _, err := os.Stat(paths.Root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("profile path created for omitted review: %v", err)
+	}
+}
