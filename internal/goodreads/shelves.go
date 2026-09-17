@@ -107,7 +107,7 @@ func parseShelfRow(row *goquery.Selection) (domain.Book, error) {
 	if err != nil {
 		return domain.Book{}, err
 	}
-	book.DateRead, err = parseShelfDate(shelfDateText(row.Find("td.field.date_read")))
+	book.DateRead, err = parseShelfDateCell(row.Find("td.field.date_read"))
 	if err != nil {
 		return domain.Book{}, err
 	}
@@ -231,7 +231,37 @@ func shelfDateText(cell *goquery.Selection) string {
 	if value.Length() == 0 {
 		return ""
 	}
-	copy := value.Clone()
+	return visibleDateText(value)
+}
+
+func parseShelfDateCell(cell *goquery.Selection) (*string, error) {
+	rows := cell.Find(".value .date_row")
+	if rows.Length() == 0 {
+		return parseShelfDate(shelfDateText(cell))
+	}
+	var result *string
+	var rowErr error
+	rows.EachWithBreak(func(_ int, row *goquery.Selection) bool {
+		parsed, err := parseShelfDate(visibleDateText(row))
+		if err != nil {
+			rowErr = err
+			return false
+		}
+		if parsed == nil {
+			return true
+		}
+		if result != nil && *result != *parsed {
+			rowErr = fmt.Errorf("%w at library.row: multiple finish dates are ambiguous", ErrCompatibility)
+			return false
+		}
+		result = parsed
+		return true
+	})
+	return result, rowErr
+}
+
+func visibleDateText(selection *goquery.Selection) string {
+	copy := selection.Clone()
 	copy.Find("a,script,style").Remove()
 	return strings.Join(strings.Fields(copy.Text()), " ")
 }

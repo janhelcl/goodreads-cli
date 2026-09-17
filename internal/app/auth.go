@@ -21,6 +21,7 @@ type Service interface {
 	Library(context.Context, domain.LibraryFilter) ([]domain.Book, error)
 	Get(context.Context, domain.ISBN) (domain.Book, error)
 	Rate(context.Context, domain.ISBN, int) (domain.MutationResult, error)
+	Start(context.Context, domain.ISBN) (domain.MutationResult, error)
 }
 
 type LogoutResult struct {
@@ -192,6 +193,39 @@ func (a Auth) Rate(ctx context.Context, isbn domain.ISBN, rating int) (domain.Mu
 		return domain.MutationResult{}, err
 	}
 	result, err := goodreads.Rate(ctx, b, isbn, rating)
+	closeErr := b.Close()
+	if err != nil {
+		return domain.MutationResult{}, err
+	}
+	if closeErr != nil {
+		return domain.MutationResult{}, closeErr
+	}
+	if !result.Verified {
+		return domain.MutationResult{}, goodreads.ErrVerificationFailed
+	}
+	return result, nil
+}
+
+func (a Auth) Start(ctx context.Context, isbn domain.ISBN) (domain.MutationResult, error) {
+	lock, err := a.acquire(ctx)
+	if err != nil {
+		return domain.MutationResult{}, err
+	}
+	defer lock.Release()
+	exists, err := a.Paths.HasBrowser()
+	if err != nil {
+		return domain.MutationResult{}, err
+	}
+	if !exists {
+		return domain.MutationResult{}, goodreads.ErrSessionExpired
+	}
+	b, err := a.Factory.Launch(ctx, browser.LaunchOptions{
+		ProfileDir: a.Paths.Browser, BrowserPath: a.BrowserPath, Headless: !a.Headed,
+	})
+	if err != nil {
+		return domain.MutationResult{}, err
+	}
+	result, err := goodreads.Start(ctx, b, isbn)
 	closeErr := b.Close()
 	if err != nil {
 		return domain.MutationResult{}, err

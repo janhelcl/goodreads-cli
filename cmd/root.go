@@ -243,6 +243,42 @@ func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
 		},
 	})
 	root.AddCommand(&cobra.Command{
+		Use:   "start <isbn>",
+		Short: "Set and verify currently-reading status",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("%w: start requires one ISBN", errUsage)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			isbn, err := domain.NormalizeISBN(args[0])
+			if err != nil {
+				return fmt.Errorf("%w: %v", errUsage, err)
+			}
+			service, err := factory(headed)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := newContext(cmd, time.Minute)
+			defer cancel()
+			result, err := service.Start(ctx, isbn)
+			if err != nil {
+				return err
+			}
+			output := mutationOutput{
+				OK:        true,
+				Operation: result.Operation,
+				ISBN13:    isbn.ISBN13,
+				BookID:    result.After.BookID,
+				Title:     result.After.Title,
+				Changes:   result.Changes,
+				Verified:  result.Verified,
+			}
+			return write(cmd, output, fmt.Sprintf("Started %s — currently-reading", result.After.Title))
+		},
+	})
+	root.AddCommand(&cobra.Command{
 		Use:   "rate <isbn> <rating>",
 		Short: "Set and verify a book rating",
 		Args: func(_ *cobra.Command, args []string) error {

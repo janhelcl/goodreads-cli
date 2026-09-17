@@ -76,7 +76,7 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 		_ = page.Close()
 		return domain.MutationResult{}, err
 	}
-	before.Review, err = loadFullReview(ctx, b, candidate.ReviewURL)
+	before.Review, err = loadFullReview(ctx, b, candidate.ReviewURL, "mutation.rating")
 	if err != nil {
 		_ = page.Close()
 		return domain.MutationResult{}, err
@@ -100,7 +100,7 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
 	}
 	after := afterCandidate.Book
-	after.Review, readbackErr = loadFullReview(ctx, b, afterCandidate.ReviewURL)
+	after.Review, readbackErr = loadFullReview(ctx, b, afterCandidate.ReviewURL, "mutation.rating")
 	if readbackErr != nil {
 		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable", ErrMutationAmbiguous)
 	}
@@ -115,6 +115,16 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 }
 
 func findRatingCandidate(ctx context.Context, b browser.Browser, isbn domain.ISBN) (ratingCandidate, error) {
+	return findMutationCandidate(ctx, b, isbn, "mutation.rating", false)
+}
+
+func findMutationCandidate(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	stage string,
+	requireShelfChooser bool,
+) (ratingCandidate, error) {
 	target, _ := url.Parse(libraryURL)
 	visited := map[string]bool{}
 	var found ratingCandidate
@@ -162,7 +172,7 @@ func findRatingCandidate(ctx context.Context, b browser.Browser, isbn domain.ISB
 			if !exactISBN(book, isbn) {
 				return true
 			}
-			candidate, err := candidateFromRow(currentURL, row, book)
+			candidate, err := candidateFromRow(currentURL, row, book, stage, requireShelfChooser)
 			if err != nil {
 				rowErr = err
 				return false
@@ -196,36 +206,45 @@ func findRatingCandidate(ctx context.Context, b browser.Browser, isbn domain.ISB
 	return ratingCandidate{}, ErrPageLimit
 }
 
-func candidateFromRow(pageURL *url.URL, row *goquery.Selection, book domain.Book) (ratingCandidate, error) {
+func candidateFromRow(
+	pageURL *url.URL,
+	row *goquery.Selection,
+	book domain.Book,
+	stage string,
+	requireShelfChooser bool,
+) (ratingCandidate, error) {
 	rowID := row.AttrOr("id", "")
 	if !reviewRowID.MatchString(rowID) {
-		return ratingCandidate{}, fmt.Errorf("%w at mutation.rating: row identity changed", ErrCompatibility)
+		return ratingCandidate{}, fmt.Errorf("%w at %s: row identity changed", ErrCompatibility, stage)
 	}
 	if row.Find("td.field.rating div.stars[data-rating] a.star").Length() != 5 {
-		return ratingCandidate{}, fmt.Errorf("%w at mutation.rating: owner rating control missing", ErrCompatibility)
+		return ratingCandidate{}, fmt.Errorf("%w at %s: owner rating control missing", ErrCompatibility, stage)
 	}
 	if row.Find("td.field.date_read .value").Length() != 1 {
-		return ratingCandidate{}, fmt.Errorf("%w at mutation.rating: finish date field missing", ErrCompatibility)
+		return ratingCandidate{}, fmt.Errorf("%w at %s: finish date field missing", ErrCompatibility, stage)
+	}
+	if requireShelfChooser && row.Find("td.field.shelves a.shelfChooserLink").Length() != 1 {
+		return ratingCandidate{}, fmt.Errorf("%w at %s: shelf chooser missing", ErrCompatibility, stage)
 	}
 	reviewLinks := row.Find("a[href*='/review/edit']")
 	if reviewLinks.Length() == 0 {
-		return ratingCandidate{}, fmt.Errorf("%w at mutation.rating: review editor missing", ErrCompatibility)
+		return ratingCandidate{}, fmt.Errorf("%w at %s: review editor missing", ErrCompatibility, stage)
 	}
 	reviewURL := ""
 	var reviewErr error
 	reviewLinks.EachWithBreak(func(_ int, link *goquery.Selection) bool {
 		href, ok := link.Attr("href")
 		if !ok {
-			reviewErr = fmt.Errorf("%w at mutation.rating: review editor target missing", ErrCompatibility)
+			reviewErr = fmt.Errorf("%w at %s: review editor target missing", ErrCompatibility, stage)
 			return false
 		}
-		resolved, err := resolveReviewEditURL(pageURL, href)
+		resolved, err := resolveReviewEditURL(pageURL, href, stage)
 		if err != nil {
 			reviewErr = err
 			return false
 		}
 		if reviewURL != "" && resolved != reviewURL {
-			reviewErr = fmt.Errorf("%w at mutation.rating: review editor is ambiguous", ErrCompatibility)
+			reviewErr = fmt.Errorf("%w at %s: review editor is ambiguous", ErrCompatibility, stage)
 			return false
 		}
 		reviewURL = resolved
@@ -237,69 +256,79 @@ func candidateFromRow(pageURL *url.URL, row *goquery.Selection, book domain.Book
 	return ratingCandidate{Book: book, PageURL: pageURL.String(), RowID: rowID, ReviewURL: reviewURL}, nil
 }
 
-func resolveReviewEditURL(base *url.URL, href string) (string, error) {
+func resolveReviewEditURL(base *url.URL, href, stage string) (string, error) {
 	reference, err := url.Parse(href)
 	if err != nil {
-		return "", fmt.Errorf("%w at mutation.rating: invalid review URL", ErrCompatibility)
+		return "", fmt.Errorf("%w at %s: invalid review URL", ErrCompatibility, stage)
 	}
 	target := base.ResolveReference(reference)
 	if !isGoodreadsPage(target.String()) || !reviewEditPath.MatchString(target.Path) {
-		return "", fmt.Errorf("%w at mutation.rating: unsafe review URL", ErrCompatibility)
+		return "", fmt.Errorf("%w at %s: unsafe review URL", ErrCompatibility, stage)
 	}
 	target.RawQuery = ""
 	target.Fragment = ""
 	return target.String(), nil
 }
 
-func loadFullReview(ctx context.Context, b browser.Browser, target string) (*string, error) {
+func loadFullReview(ctx context.Context, b browser.Browser, target, stage string) (*string, error) {
 	page, err := b.NewPage(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("mutation.rating: review page unavailable: %w", err)
+		return nil, fmt.Errorf("%s: review page unavailable: %w", stage, err)
 	}
 	defer page.Close()
 	current, err := page.URL(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("mutation.rating: review URL unavailable: %w", err)
+		return nil, fmt.Errorf("%s: review URL unavailable: %w", stage, err)
 	}
 	currentURL, err := url.Parse(current)
 	if err != nil || !isGoodreadsPage(current) || !reviewEditPath.MatchString(currentURL.Path) {
-		return nil, fmt.Errorf("%w at mutation.rating: unexpected review page", ErrCompatibility)
+		return nil, fmt.Errorf("%w at %s: unexpected review page", ErrCompatibility, stage)
 	}
 	raw, err := page.HTML(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("mutation.rating: review DOM unavailable: %w", err)
+		return nil, fmt.Errorf("%s: review DOM unavailable: %w", stage, err)
 	}
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("%w at mutation.rating: invalid review DOM", ErrCompatibility)
+		return nil, fmt.Errorf("%w at %s: invalid review DOM", ErrCompatibility, stage)
 	}
 	textarea := doc.Find("textarea[name='review[review]'], textarea#review_review_usertext")
 	if textarea.Length() != 1 || textarea.First().Closest("form").Length() != 1 {
-		return nil, fmt.Errorf("%w at mutation.rating: full review field missing", ErrCompatibility)
+		return nil, fmt.Errorf("%w at %s: full review field missing", ErrCompatibility, stage)
 	}
 	review := textarea.First().Text()
 	return &review, nil
 }
 
 func ratingBookOnPage(ctx context.Context, page browser.Page, candidate ratingCandidate, isbn domain.ISBN) (domain.Book, error) {
+	return mutationBookOnPage(ctx, page, candidate, isbn, "mutation.rating")
+}
+
+func mutationBookOnPage(
+	ctx context.Context,
+	page browser.Page,
+	candidate ratingCandidate,
+	isbn domain.ISBN,
+	stage string,
+) (domain.Book, error) {
 	raw, err := page.HTML(ctx)
 	if err != nil {
-		return domain.Book{}, fmt.Errorf("mutation.rating: target DOM unavailable: %w", err)
+		return domain.Book{}, fmt.Errorf("%s: target DOM unavailable: %w", stage, err)
 	}
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(raw))
 	if err != nil {
-		return domain.Book{}, fmt.Errorf("%w at mutation.rating: invalid target DOM", ErrCompatibility)
+		return domain.Book{}, fmt.Errorf("%w at %s: invalid target DOM", ErrCompatibility, stage)
 	}
 	row := doc.Find("#" + candidate.RowID)
 	if row.Length() != 1 {
-		return domain.Book{}, fmt.Errorf("%w at mutation.rating: target row missing", ErrCompatibility)
+		return domain.Book{}, fmt.Errorf("%w at %s: target row missing", ErrCompatibility, stage)
 	}
 	book, err := parseShelfRow(row)
 	if err != nil {
 		return domain.Book{}, err
 	}
 	if !exactISBN(book, isbn) || book.BookID != candidate.Book.BookID {
-		return domain.Book{}, fmt.Errorf("%w at mutation.rating: target identity changed", ErrCompatibility)
+		return domain.Book{}, fmt.Errorf("%w at %s: target identity changed", ErrCompatibility, stage)
 	}
 	return book, nil
 }

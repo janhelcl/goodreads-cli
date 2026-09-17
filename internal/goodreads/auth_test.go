@@ -15,6 +15,8 @@ type fakePage struct {
 	selectors map[string]bool
 	text      map[string]bool
 	click     func(string) error
+	input     func(string, string) error
+	value     func(string) (string, error)
 }
 
 func (p *fakePage) URL(context.Context) (string, error) { return p.url, nil }
@@ -31,6 +33,21 @@ func (p *fakePage) Click(_ context.Context, selector string) error {
 		return p.click(selector)
 	}
 	return nil
+}
+func (p *fakePage) ClickAndWaitForRequest(ctx context.Context, selector string) error {
+	return p.Click(ctx, selector)
+}
+func (p *fakePage) Input(_ context.Context, selector, value string) error {
+	if p.input != nil {
+		return p.input(selector, value)
+	}
+	return nil
+}
+func (p *fakePage) Value(_ context.Context, selector string) (string, error) {
+	if p.value != nil {
+		return p.value(selector)
+	}
+	return "", nil
 }
 
 type fakeBrowser struct {

@@ -38,6 +38,9 @@ func (a authStub) Get(context.Context, domain.ISBN) (domain.Book, error) {
 func (a authStub) Rate(context.Context, domain.ISBN, int) (domain.MutationResult, error) {
 	return a.result, a.err
 }
+func (a authStub) Start(context.Context, domain.ISBN) (domain.MutationResult, error) {
+	return a.result, a.err
+}
 
 func TestAuthJSONContracts(t *testing.T) {
 	for _, tc := range []struct {
@@ -180,6 +183,40 @@ func TestRateJSONAndValidation(t *testing.T) {
 		return authStub{result: result}, nil
 	})
 	want := `{"ok":true,"operation":"rate","isbn13":"9780142437247","book_id":"42","title":"Invented Book","changes":{"rating":4},"verified":true}` + "\n"
+	if code != 0 || out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestStartJSONAndValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"start", "bad-isbn"},
+		{"start"},
+		{"start", "9780142437247", "extra"},
+	} {
+		var out, errOut bytes.Buffer
+		called := false
+		code := run(args, &out, &errOut, func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		})
+		if code != 2 || called || out.Len() != 0 {
+			t.Fatalf("%v: code=%d called=%t stdout=%q", args, code, called, out.String())
+		}
+	}
+
+	status := domain.StatusCurrentlyReading
+	result := domain.MutationResult{
+		Operation: "start",
+		After:     domain.Book{BookID: "42", Title: "Invented Book", Status: status},
+		Changes:   domain.BookUpdate{Status: &status},
+		Verified:  true,
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"start", "9780142437247", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{result: result}, nil
+	})
+	want := `{"ok":true,"operation":"start","isbn13":"9780142437247","book_id":"42","title":"Invented Book","changes":{"status":"currently-reading"},"verified":true}` + "\n"
 	if code != 0 || out.String() != want || errOut.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}

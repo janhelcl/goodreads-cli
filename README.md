@@ -23,8 +23,9 @@ The implementation contract lives in [`specs/`](specs/README.md). Start there be
 
 The dedicated browser profile, OS lock, and Rod launcher are implemented. On a
 Linux machine with Chrome, manual sign-in persisted across a headless restart.
-`gr login`, `status`, `logout`, `library`, `get <isbn>`, and the first verified
-mutation, `rate <isbn> <rating>`, are implemented with `--json` output.
+`gr login`, `status`, `logout`, `library`, `get <isbn>`, and the verified
+mutations `start <isbn>` and `rate <isbn> <rating>` are implemented with
+`--json` output.
 Authentication, populated/filtered shelf reads, and one reversible rating
 canary passed live. Exact lookup remains fail-closed when any scanned row omits
 its ISBN. The [compatibility matrix](specs/compatibility-matrix.md) records the
@@ -33,8 +34,8 @@ tested scope and remaining gates.
 For development with Go installed, run `go run . status --json` to check the
 saved session, then `go run . library --json` to read the live shelf. `get` and
 `rate` accept an exact ISBN-10 or ISBN-13; ratings must be 1 through 5.
-`logout` deletes the CLI-owned browser profile, including its saved sign-in
-session.
+`start` sets an exact library edition to `currently-reading`. `logout` deletes
+the CLI-owned browser profile, including its saved sign-in session.
 
 For now, use an installed Chrome, Chromium, or Edge. `GOODREADS_CLI_BROWSER`
 may point to a supported executable for development; Rod-managed browser

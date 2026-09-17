@@ -130,6 +130,9 @@ type Page interface {
 	HasText(ctx context.Context, selector, jsRegex string) (bool, error)
 	HTML(ctx context.Context) (string, error)
 	Click(ctx context.Context, selector string) error
+	ClickAndWaitForRequest(ctx context.Context, selector string) error
+	Input(ctx context.Context, selector, value string) error
+	Value(ctx context.Context, selector string) (string, error)
 	Close() error
 }
 
@@ -364,4 +367,80 @@ func (p *rodPage) Click(ctx context.Context, selector string) error {
 		return err
 	}
 	return element.Click(proto.InputMouseButtonLeft, 1)
+}
+
+// ClickAndWaitForRequest clicks one control and waits for the first
+// browser-initiated, allowed-origin XHR/fetch that starts afterward to finish.
+// The caller must still verify resulting application state independently.
+func (p *rodPage) ClickAndWaitForRequest(ctx context.Context, selector string) error {
+	eventCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var requestID proto.NetworkRequestID
+	var requestFailed bool
+	wait := p.rod.Context(eventCtx).EachEvent(
+		func(event *proto.NetworkRequestWillBeSent) {
+			if requestID != "" ||
+				(event.Type != proto.NetworkResourceTypeXHR && event.Type != proto.NetworkResourceTypeFetch) ||
+				!originAllowed(event.Request.URL, p.allowed) {
+				return
+			}
+			requestID = event.RequestID
+		},
+		func(event *proto.NetworkLoadingFinished) bool {
+			return requestID != "" && event.RequestID == requestID
+		},
+		func(event *proto.NetworkLoadingFailed) bool {
+			if requestID == "" || event.RequestID != requestID {
+				return false
+			}
+			requestFailed = true
+			return true
+		},
+	)
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err == nil {
+		err = element.ScrollIntoView()
+	}
+	if err == nil {
+		err = element.Click(proto.InputMouseButtonLeft, 1)
+	}
+	if err != nil {
+		cancel()
+		wait()
+		return err
+	}
+	wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if requestID == "" {
+		return fmt.Errorf("no matching browser request observed")
+	}
+	if requestFailed {
+		return fmt.Errorf("browser request failed")
+	}
+	return nil
+}
+
+func (p *rodPage) Input(ctx context.Context, selector, value string) error {
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err != nil {
+		return err
+	}
+	if err := element.ScrollIntoView(); err != nil {
+		return err
+	}
+	return element.Input(value)
+}
+
+func (p *rodPage) Value(ctx context.Context, selector string) (string, error) {
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err != nil {
+		return "", err
+	}
+	value, err := element.Property("value")
+	if err != nil {
+		return "", err
+	}
+	return value.Str(), nil
 }

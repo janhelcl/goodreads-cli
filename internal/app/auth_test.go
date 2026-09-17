@@ -18,6 +18,9 @@ func (p pageStub) HasText(context.Context, string, string) (bool, error) { retur
 func (p pageStub) Close() error                                          { return nil }
 func (p pageStub) HTML(context.Context) (string, error)                  { return "", nil }
 func (p pageStub) Click(context.Context, string) error                   { return nil }
+func (p pageStub) ClickAndWaitForRequest(context.Context, string) error  { return nil }
+func (p pageStub) Input(context.Context, string, string) error           { return nil }
+func (p pageStub) Value(context.Context, string) (string, error)         { return "", nil }
 
 type browserStub struct{}
 

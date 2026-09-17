@@ -137,6 +137,34 @@ func TestShelfDateTextExcludesEditControl(t *testing.T) {
 	}
 }
 
+func TestParseShelfDateCellHandlesReadingSessions(t *testing.T) {
+	cell := func(rows string) *goquery.Selection {
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(
+			`<table><tr><td class="field date_read"><div class="value">` + rows + `</div></td></tr></table>`,
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc.Find("td")
+	}
+	unset := `<div class="date_row"><div class="editable_date"><span class="greyText">Not set</span><a href="#">[edit]</a></div></div>`
+	got, err := parseShelfDateCell(cell(unset + unset))
+	if err != nil || got != nil {
+		t.Fatalf("repeated unset date=%v err=%v", got, err)
+	}
+	got, err = parseShelfDateCell(cell(unset + `<div class="date_row"><div class="editable_date">Sep 12, 2026 <a href="#">[edit]</a></div></div>`))
+	if err != nil || got == nil || *got != "2026-09-12" {
+		t.Fatalf("one completed session date=%v err=%v", got, err)
+	}
+	_, err = parseShelfDateCell(cell(
+		`<div class="date_row"><div class="editable_date">Sep 12, 2026</div></div>` +
+			`<div class="date_row"><div class="editable_date">Sep 13, 2026</div></div>`,
+	))
+	if !errors.Is(err, ErrCompatibility) {
+		t.Fatalf("expected ambiguous reread dates, got %v", err)
+	}
+}
+
 func stringPointer(value string) *string {
 	return &value
 }

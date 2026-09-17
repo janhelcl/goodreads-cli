@@ -107,6 +107,59 @@ func main() {
 				i, goquery.NodeName(field), field.AttrOr("type", ""), safeToken(field.AttrOr("name", "")),
 				safeToken(field.AttrOr("id", "")), attributeNames(field))
 		})
+		form.Find("a,button,label").Each(func(i int, field *goquery.Selection) {
+			if i >= 80 {
+				return
+			}
+			fmt.Printf("form_action[%d] tag=%q class=%q attrs=%q text_pattern=%q\n",
+				i, goquery.NodeName(field), field.AttrOr("class", ""), attributeNames(field),
+				valuePattern(strings.Join(strings.Fields(field.Text()), " ")))
+		})
+		for _, action := range []string{"delete", "remove", "clear", "save", "cancel"} {
+			count := form.Find("a,button,label,input").FilterFunction(func(_ int, field *goquery.Selection) bool {
+				text := strings.ToLower(strings.Join(strings.Fields(field.Text()), " "))
+				value := strings.ToLower(strings.Join(strings.Fields(field.AttrOr("value", "")), " "))
+				return text == action || value == action
+			}).Length()
+			fmt.Printf("form_action_%s_count %d\n", action, count)
+		}
+		for _, unit := range []string{"year", "month", "day"} {
+			selects := form.Find(fmt.Sprintf("select[name$='[end][%s]']", unit))
+			clearable := selects.FilterFunction(func(_ int, selection *goquery.Selection) bool {
+				return selection.Find("option[selected]").FilterFunction(func(_ int, option *goquery.Selection) bool {
+					return option.AttrOr("value", "") != ""
+				}).Length() == 1
+			})
+			fmt.Printf("end_%s_select_count %d\n", unit, selects.Length())
+			fmt.Printf("end_%s_clearable_count %d\n", unit, clearable.Length())
+			fmt.Printf("end_%s_blank_option_count %d\n", unit, clearable.Find("option[value='']").Length())
+			selects.Each(func(i int, selection *goquery.Selection) {
+				name := selection.AttrOr("name", "")
+				current, valueErr := edit.Value(ctx, fmt.Sprintf(`select[name="%s"]`, name))
+				blank := selection.Find("option").FilterFunction(func(_ int, option *goquery.Selection) bool {
+					return strings.TrimSpace(option.Text()) == ""
+				}).First()
+				fmt.Printf("end_%s[%d]_current_pattern=%q value_error=%t blank_text_options=%d blank_value_pattern=%q\n",
+					unit, i, valuePattern(current), valueErr != nil,
+					selection.Find("option").FilterFunction(func(_ int, option *goquery.Selection) bool {
+						return strings.TrimSpace(option.Text()) == ""
+					}).Length(), valuePattern(blank.AttrOr("value", "")))
+				for _, placeholder := range []string{unit, strings.ToUpper(unit[:1]) + unit[1:]} {
+					fmt.Printf("end_%s[%d]_current_equals_%s=%t option_equals_%s=%d\n",
+						unit, i, placeholder, current == placeholder, placeholder,
+						selection.Find(fmt.Sprintf(`option[value="%s"]`, placeholder)).Length())
+				}
+				if unit == "year" {
+					ancestor := selection.Parent()
+					for depth := 0; depth < 6 && ancestor.Length() == 1; depth++ {
+						fmt.Printf("end_year[%d]_ancestor[%d] tag=%q class=%q delete_links=%d\n",
+							i, depth, goquery.NodeName(ancestor), ancestor.AttrOr("class", ""),
+							ancestor.Find("a.deleteReadingSession").Length())
+						ancestor = ancestor.Parent()
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -152,6 +205,21 @@ func attributeNames(selection *goquery.Selection) string {
 		names = append(names, attr.Key)
 	}
 	return strings.Join(names, ",")
+}
+
+func valuePattern(value string) string {
+	var result strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			result.WriteByte('9')
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
+			result.WriteByte('A')
+		default:
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }
 
 func fail(message string) {

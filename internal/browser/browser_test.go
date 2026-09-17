@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,7 +103,17 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 		fmt.Fprint(w, "<html><body>unexpected origin</body></html>")
 	}))
 	defer escape.Close()
+	var mutationRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/request" {
+			fmt.Fprint(w, `<html><body><button id="mutate" onclick="fetch('/mutation', {method: 'POST'})">mutate</button></body></html>`)
+			return
+		}
+		if r.URL.Path == "/mutation" {
+			mutationRequests.Add(1)
+			fmt.Fprint(w, "ok")
+			return
+		}
 		if r.URL.Path == "/escape" {
 			http.Redirect(w, r, escape.URL, http.StatusFound)
 			return
@@ -138,6 +149,21 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 		t.Fatalf("initial cookie missing: %q", immediate.Value.String())
 	}
 	_ = page.Close()
+	requestPage, err := first.NewPage(ctx, server.URL+"/request")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if err := requestPage.ClickAndWaitForRequest(ctx, "#mutate"); err != nil {
+		_ = requestPage.Close()
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	_ = requestPage.Close()
+	if mutationRequests.Load() != 1 {
+		_ = first.Close()
+		t.Fatalf("mutation request count=%d", mutationRequests.Load())
+	}
 	if _, err := first.NewPage(ctx, server.URL+"/escape"); !errors.Is(err, ErrOrigin) {
 		_ = first.Close()
 		t.Fatalf("redirect error: %v", err)
