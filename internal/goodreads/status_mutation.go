@@ -31,6 +31,16 @@ func SetStatus(
 	isbn domain.ISBN,
 	status domain.ReadingStatus,
 ) (domain.MutationResult, error) {
+	return setStatus(ctx, b, isbn, status, false)
+}
+
+func setStatus(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	status domain.ReadingStatus,
+	allowFinishDateChange bool,
+) (domain.MutationResult, error) {
 	if !status.Valid() {
 		return domain.MutationResult{}, domain.ErrInvalidStatus
 	}
@@ -61,7 +71,7 @@ func SetStatus(
 	}
 	if before.Status == status {
 		_ = page.Close()
-		return VerifyStatusMutation(before, before, status)
+		return verifyStatusMutation(before, before, status, allowFinishDateChange)
 	}
 
 	openSelector := fmt.Sprintf("#%s td.field.shelves a.shelfChooserLink", candidate.RowID)
@@ -101,7 +111,7 @@ func SetStatus(
 	if readbackErr != nil {
 		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable", ErrMutationAmbiguous)
 	}
-	result, verifyErr := VerifyStatusMutation(before, after, status)
+	result, verifyErr := verifyStatusMutation(before, after, status, allowFinishDateChange)
 	if verifyErr == nil {
 		return result, nil
 	}
@@ -230,6 +240,15 @@ func VerifyStatusMutation(
 	after domain.Book,
 	status domain.ReadingStatus,
 ) (domain.MutationResult, error) {
+	return verifyStatusMutation(before, after, status, false)
+}
+
+func verifyStatusMutation(
+	before domain.Book,
+	after domain.Book,
+	status domain.ReadingStatus,
+	allowFinishDateChange bool,
+) (domain.MutationResult, error) {
 	if !status.Valid() {
 		return domain.MutationResult{}, domain.ErrInvalidStatus
 	}
@@ -248,7 +267,7 @@ func VerifyStatusMutation(
 	if after.Rating != before.Rating {
 		return domain.MutationResult{}, verificationError("rating", "changed")
 	}
-	if !equalOptionalString(after.DateRead, before.DateRead) {
+	if !allowFinishDateChange && !equalOptionalString(after.DateRead, before.DateRead) {
 		return domain.MutationResult{}, verificationError("date_read", "changed")
 	}
 	if !equalStringSet(after.Bookshelves, before.Bookshelves) {

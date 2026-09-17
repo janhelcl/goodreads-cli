@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janhelcl/goodreads-cli/internal/app"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
@@ -18,12 +19,17 @@ type authStub struct {
 	book   domain.Book
 	result domain.MutationResult
 	err    error
+	wait   bool
 }
 
 func (a authStub) Login(context.Context) (goodreads.ConnectionStatus, error) {
 	return a.status, a.err
 }
-func (a authStub) Status(context.Context) (goodreads.ConnectionStatus, error) {
+func (a authStub) Status(ctx context.Context) (goodreads.ConnectionStatus, error) {
+	if a.wait {
+		<-ctx.Done()
+		return goodreads.ConnectionStatus{}, ctx.Err()
+	}
 	return a.status, a.err
 }
 func (a authStub) Logout(context.Context) (app.LogoutResult, error) {
@@ -39,6 +45,9 @@ func (a authStub) Rate(context.Context, domain.ISBN, int) (domain.MutationResult
 	return a.result, a.err
 }
 func (a authStub) Start(context.Context, domain.ISBN) (domain.MutationResult, error) {
+	return a.result, a.err
+}
+func (a authStub) Finish(context.Context, domain.ISBN, time.Time, *int) (domain.MutationResult, error) {
 	return a.result, a.err
 }
 
@@ -72,6 +81,18 @@ func TestUsageRejectedBeforeService(t *testing.T) {
 		if code != 2 || called || out.Len() != 0 {
 			t.Fatalf("%v: code=%d factory=%v stdout=%q stderr=%q", args, code, called, out.String(), errOut.String())
 		}
+	}
+}
+
+func TestRunContextPropagatesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, errOut bytes.Buffer
+	code := runContext(ctx, []string{"status"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{wait: true}, nil
+	})
+	if code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), "operation failed") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
 
@@ -217,6 +238,45 @@ func TestStartJSONAndValidation(t *testing.T) {
 		return authStub{result: result}, nil
 	})
 	want := `{"ok":true,"operation":"start","isbn13":"9780142437247","book_id":"42","title":"Invented Book","changes":{"status":"currently-reading"},"verified":true}` + "\n"
+	if code != 0 || out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestFinishJSONAndValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"finish", "bad-isbn"},
+		{"finish"},
+		{"finish", "9780142437247", "--date", "2026-9-17"},
+		{"finish", "9780142437247", "--date", "not-a-date"},
+		{"finish", "9780142437247", "--rating", "0"},
+		{"finish", "9780142437247", "--rating", "6"},
+	} {
+		var out, errOut bytes.Buffer
+		called := false
+		code := run(args, &out, &errOut, func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		})
+		if code != 2 || called || out.Len() != 0 {
+			t.Fatalf("%v: code=%d called=%t stdout=%q", args, code, called, out.String())
+		}
+	}
+
+	status := domain.StatusRead
+	date := "2026-09-17"
+	rating := 4
+	result := domain.MutationResult{
+		Operation: "finish",
+		After:     domain.Book{BookID: "42", Title: "Invented Book", Status: status, DateRead: &date, Rating: rating},
+		Changes:   domain.BookUpdate{Status: &status, DateRead: &date, Rating: &rating},
+		Verified:  true,
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"finish", "9780142437247", "--date", date, "--rating", "4", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{result: result}, nil
+	})
+	want := `{"ok":true,"operation":"finish","isbn13":"9780142437247","book_id":"42","title":"Invented Book","changes":{"status":"read","rating":4,"date_read":"2026-09-17"},"verified":true}` + "\n"
 	if code != 0 || out.String() != want || errOut.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}

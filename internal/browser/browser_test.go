@@ -105,6 +105,10 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 	defer escape.Close()
 	var mutationRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/select" {
+			fmt.Fprint(w, `<html><body><select id="year"><option>Year</option><option>2026</option></select></body></html>`)
+			return
+		}
 		if r.URL.Path == "/request" {
 			fmt.Fprint(w, `<html><body><button id="mutate" onclick="fetch('/mutation', {method: 'POST'})">mutate</button></body></html>`)
 			return
@@ -164,6 +168,22 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 		_ = first.Close()
 		t.Fatalf("mutation request count=%d", mutationRequests.Load())
 	}
+	selectPage, err := first.NewPage(ctx, server.URL+"/select")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if err := selectPage.SelectValue(ctx, "#year", "2026"); err != nil {
+		_ = selectPage.Close()
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if selected, err := selectPage.Value(ctx, "#year"); err != nil || selected != "2026" {
+		_ = selectPage.Close()
+		_ = first.Close()
+		t.Fatalf("selected value=%q err=%v", selected, err)
+	}
+	_ = selectPage.Close()
 	if _, err := first.NewPage(ctx, server.URL+"/escape"); !errors.Is(err, ErrOrigin) {
 		_ = first.Close()
 		t.Fatalf("redirect error: %v", err)

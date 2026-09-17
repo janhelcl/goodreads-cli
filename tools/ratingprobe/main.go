@@ -99,6 +99,14 @@ func main() {
 	form := textarea.First().Closest("form")
 	fmt.Println("review_form_count", form.Length())
 	if form.Length() == 1 {
+		if current, valueErr := edit.Value(ctx, "input[name='readingEditsMade']"); valueErr == nil {
+			fmt.Println("reading_edits_made_pattern", valuePattern(current))
+		}
+		form.Find("input[name$='[state]']").Each(func(i int, field *goquery.Selection) {
+			name := field.AttrOr("name", "")
+			current, valueErr := edit.Value(ctx, fmt.Sprintf(`input[name="%s"]`, name))
+			fmt.Printf("reading_session_state[%d]=%q value_error=%t\n", i, current, valueErr != nil)
+		})
 		form.Find("input,select,textarea,button").Each(func(i int, field *goquery.Selection) {
 			if i >= 80 {
 				return

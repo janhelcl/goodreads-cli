@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -132,6 +133,7 @@ type Page interface {
 	Click(ctx context.Context, selector string) error
 	ClickAndWaitForRequest(ctx context.Context, selector string) error
 	Input(ctx context.Context, selector, value string) error
+	SelectValue(ctx context.Context, selector, value string) error
 	Value(ctx context.Context, selector string) (string, error)
 	Close() error
 }
@@ -431,6 +433,24 @@ func (p *rodPage) Input(ctx context.Context, selector, value string) error {
 		return err
 	}
 	return element.Input(value)
+}
+
+func (p *rodPage) SelectValue(ctx context.Context, selector, value string) error {
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err != nil {
+		return err
+	}
+	err = element.Select([]string{fmt.Sprintf(`[value="%s"]`, value)}, true, rod.SelectorTypeCSSSector)
+	if err == nil {
+		return nil
+	}
+	var notFound *rod.ElementNotFoundError
+	if !errors.As(err, &notFound) {
+		return err
+	}
+	// Goodreads year/day options currently omit value attributes, in which
+	// case the DOM value is their rendered text.
+	return element.Select([]string{"^" + regexp.QuoteMeta(value) + "$"}, true, rod.SelectorTypeRegex)
 }
 
 func (p *rodPage) Value(ctx context.Context, selector string) (string, error) {

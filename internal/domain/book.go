@@ -1,6 +1,9 @@
 package domain
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 type ReadingStatus string
 
@@ -13,6 +16,7 @@ const (
 var (
 	ErrInvalidStatus = errors.New("invalid reading status")
 	ErrInvalidRating = errors.New("invalid rating")
+	ErrInvalidDate   = errors.New("invalid date")
 	ErrInvalidLimit  = errors.New("invalid library limit")
 )
 
@@ -73,6 +77,13 @@ func (f LibraryFilter) Validate() error {
 func ValidateRating(rating int) error {
 	if rating < 1 || rating > 5 {
 		return ErrInvalidRating
+	}
+	return nil
+}
+
+func ValidateDate(date time.Time) error {
+	if date.IsZero() {
+		return ErrInvalidDate
 	}
 	return nil
 }

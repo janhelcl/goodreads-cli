@@ -5,10 +5,90 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
 )
+
+func TestVerifyFinishDateMutation(t *testing.T) {
+	before := ratingSnapshot()
+	after := ratingSnapshot()
+	date := "2026-09-17"
+	after.DateRead = &date
+	result, err := VerifyFinishDateMutation(before, after, date)
+	if err != nil || !result.Verified || result.Operation != "set-finish-date" ||
+		result.Changes.DateRead == nil || *result.Changes.DateRead != date {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestSetFinishDateSelectsCompletedSessionAndVerifies(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	date, err := time.Parse("2006-01-02", "2026-09-17")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pageURL = "https://www.goodreads.com/review/list/123"
+	const reviewURL = "https://www.goodreads.com/review/edit/7"
+	before := libraryTestPage(ownerStatusFixture(domain.StatusRead, false), pageURL)
+	afterHTML := strings.Replace(ownerStatusFixture(domain.StatusRead, false), "Sep 12, 2026", "Sep 17, 2026", 1)
+	after := libraryTestPage(afterHTML, pageURL)
+	reviewBefore := &fakePage{url: reviewURL, html: dateReviewFixture()}
+	action := &fakePage{url: reviewURL, html: dateReviewFixture()}
+	reviewAfter := &fakePage{url: reviewURL, html: dateReviewFixture()}
+	values := map[string]string{
+		"year": "2026", "month": "9", "day": "12",
+	}
+	unitFor := func(selector string) string {
+		for _, unit := range []string{"year", "month", "day"} {
+			if strings.Contains(selector, "[end]["+unit+"]") {
+				return unit
+			}
+		}
+		return ""
+	}
+	action.value = func(selector string) (string, error) {
+		if strings.Contains(selector, "readingEditsMade") {
+			return "true", nil
+		}
+		unit := unitFor(selector)
+		if strings.Contains(selector, "pickerA") {
+			return values[unit], nil
+		}
+		if unit != "" {
+			return finishDatePlaceholder(unit), nil
+		}
+		return "", nil
+	}
+	action.selectVal = func(selector, value string) error {
+		if !strings.Contains(selector, "pickerA") {
+			t.Fatalf("selected wrong reading session: %q", selector)
+		}
+		values[unitFor(selector)] = value
+		return nil
+	}
+	action.click = func(selector string) error {
+		if !strings.Contains(selector, "input[type='submit']") {
+			t.Fatalf("unexpected click %q", selector)
+		}
+		action.url = "https://www.goodreads.com/review/show/7"
+		return nil
+	}
+	b := &fakeBrowser{
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {privatePage(), before, after},
+			reviewURL:  {reviewBefore, action, reviewAfter},
+		},
+	}
+	result, err := SetFinishDate(context.Background(), b, isbn, date)
+	if err != nil || !result.Verified || result.After.DateRead == nil || *result.After.DateRead != "2026-09-17" {
+		t.Fatalf("result=%+v err=%v calls=%v", result, err, b.calls)
+	}
+}
 
 func TestVerifyFinishDateClear(t *testing.T) {
 	before := ratingSnapshot()
@@ -50,7 +130,7 @@ func TestVerifyFinishDateClearFailsClosed(t *testing.T) {
 	}
 }
 
-func TestClearFinishDateRemovesDatedSessionAndVerifies(t *testing.T) {
+func TestClearFinishDateClearsDatedSessionAndVerifies(t *testing.T) {
 	isbn, err := domain.NormalizeISBN("9780306406157")
 	if err != nil {
 		t.Fatal(err)
@@ -68,20 +148,25 @@ func TestClearFinishDateRemovesDatedSessionAndVerifies(t *testing.T) {
 	reviewBefore := &fakePage{url: reviewURL, html: dateReviewFixture()}
 	action := &fakePage{url: reviewURL, html: dateReviewFixture()}
 	reviewAfter := &fakePage{url: reviewURL, html: dateReviewFixture()}
-	deleteArmed := false
+	values := map[string]string{"year": "2026", "month": "9", "day": "12"}
+	editsMade := false
+	unitFor := func(selector string) string {
+		for _, unit := range []string{"year", "month", "day"} {
+			if strings.Contains(selector, "[end]["+unit+"]") {
+				return unit
+			}
+		}
+		return ""
+	}
 	action.value = func(selector string) (string, error) {
 		switch {
-		case strings.Contains(selector, "pickerA") && strings.Contains(selector, "[year]"):
-			return "2026", nil
-		case strings.Contains(selector, "pickerA") && strings.Contains(selector, "[month]"):
-			return "9", nil
-		case strings.Contains(selector, "pickerA") && strings.Contains(selector, "[day]"):
-			return "12", nil
-		case strings.Contains(selector, "pickerA") && strings.Contains(selector, "[delete]"):
-			if deleteArmed {
+		case strings.Contains(selector, "readingEditsMade"):
+			if editsMade {
 				return "true", nil
 			}
-			return "false", nil
+			return "", nil
+		case strings.Contains(selector, "pickerA"):
+			return values[unitFor(selector)], nil
 		case strings.Contains(selector, "[year]"):
 			return "Year", nil
 		case strings.Contains(selector, "[month]"):
@@ -92,13 +177,19 @@ func TestClearFinishDateRemovesDatedSessionAndVerifies(t *testing.T) {
 			return "", nil
 		}
 	}
+	action.selectVal = func(selector, value string) error {
+		if !strings.Contains(selector, "pickerA") {
+			t.Fatalf("cleared wrong reading session: %q", selector)
+		}
+		values[unitFor(selector)] = value
+		editsMade = true
+		return nil
+	}
 	action.click = func(selector string) error {
 		switch {
-		case strings.Contains(selector, "deleteReadingSession"):
-			deleteArmed = true
 		case strings.Contains(selector, "input[type='submit']"):
-			if !deleteArmed {
-				t.Fatal("review form submitted before removal was armed")
+			if values["year"] != "Year" || values["month"] != "Month" || values["day"] != "Day" {
+				t.Fatal("review form submitted before date fields were cleared")
 			}
 			action.url = "https://www.goodreads.com/review/show/7"
 		default:
@@ -127,7 +218,7 @@ func dateReviewFixture() string {
 			`<select name="` + prefix + `[end][day]"><option>Day</option><option>` + day + `</option></select>` +
 			`<a class="deleteReadingSession" href="#"></a></td></tr>`
 	}
-	return `<form><textarea name="review[review]"></textarea><table>` +
+	return `<form><textarea name="review[review]"></textarea><input type="hidden" name="readingEditsMade" value=""><table>` +
 		session("pickerA", "2026", "9", "12") +
 		session("pickerB", "Year", "Month", "Day") +
 		`</table><input type="submit" name="next"></form>`

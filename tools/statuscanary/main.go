@@ -34,7 +34,7 @@ func main() {
 		fail("expected two different valid statuses")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	paths, err := profile.DefaultPaths()
 	if err != nil {
@@ -58,10 +58,9 @@ func main() {
 		fail(message)
 	}
 	if restorationOnly {
-		_, statusErr := goodreads.SetStatus(ctx, b, isbn, original)
 		cleared, err := goodreads.ClearFinishDate(ctx, b, isbn)
 		if err != nil || !cleared.Verified {
-			failAfterLaunch(fmt.Sprintf("status restoration (%v) and finish-date cleanup could not be verified (%v)", statusErr, err))
+			failAfterLaunch(fmt.Sprintf("finish-date cleanup could not be verified (%v)", err))
 		}
 		restored, err := goodreads.SetStatus(ctx, b, isbn, original)
 		if err != nil || !restored.Verified {

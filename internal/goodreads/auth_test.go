@@ -16,6 +16,7 @@ type fakePage struct {
 	text      map[string]bool
 	click     func(string) error
 	input     func(string, string) error
+	selectVal func(string, string) error
 	value     func(string) (string, error)
 }
 
@@ -40,6 +41,12 @@ func (p *fakePage) ClickAndWaitForRequest(ctx context.Context, selector string) 
 func (p *fakePage) Input(_ context.Context, selector, value string) error {
 	if p.input != nil {
 		return p.input(selector, value)
+	}
+	return nil
+}
+func (p *fakePage) SelectValue(_ context.Context, selector, value string) error {
+	if p.selectVal != nil {
+		return p.selectVal(selector, value)
 	}
 	return nil
 }

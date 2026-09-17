@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,11 +44,18 @@ func defaultAuthFactory(headed bool) (app.Service, error) {
 }
 
 func Execute() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, defaultAuthFactory))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr, defaultAuthFactory))
 }
 
 func run(args []string, out, errOut io.Writer, factory authFactory) int {
+	return runContext(context.Background(), args, out, errOut, factory)
+}
+
+func runContext(ctx context.Context, args []string, out, errOut io.Writer, factory authFactory) int {
 	root := newRoot(out, errOut, factory)
+	root.SetContext(ctx)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
 		if debug, _ := root.PersistentFlags().GetBool("debug"); debug {
@@ -278,6 +287,65 @@ func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
 			return write(cmd, output, fmt.Sprintf("Started %s — currently-reading", result.After.Title))
 		},
 	})
+	var finishDate string
+	var finishRating int
+	finish := &cobra.Command{
+		Use:   "finish <isbn>",
+		Short: "Set and verify read status and finish date",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("%w: finish requires one ISBN", errUsage)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			isbn, err := domain.NormalizeISBN(args[0])
+			if err != nil {
+				return fmt.Errorf("%w: %v", errUsage, err)
+			}
+			date := time.Now().In(time.Local)
+			if cmd.Flags().Changed("date") {
+				date, err = time.ParseInLocation("2006-01-02", finishDate, time.Local)
+				if err != nil || date.Format("2006-01-02") != finishDate {
+					return fmt.Errorf("%w: --date must be YYYY-MM-DD", errUsage)
+				}
+			}
+			var rating *int
+			if cmd.Flags().Changed("rating") {
+				if err := domain.ValidateRating(finishRating); err != nil {
+					return fmt.Errorf("%w: --rating must be 1 through 5", errUsage)
+				}
+				rating = &finishRating
+			}
+			service, err := factory(headed)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := newContext(cmd, 10*time.Minute)
+			defer cancel()
+			result, err := service.Finish(ctx, isbn, date, rating)
+			if err != nil {
+				return err
+			}
+			output := mutationOutput{
+				OK:        true,
+				Operation: result.Operation,
+				ISBN13:    isbn.ISBN13,
+				BookID:    result.After.BookID,
+				Title:     result.After.Title,
+				Changes:   result.Changes,
+				Verified:  result.Verified,
+			}
+			human := fmt.Sprintf("Updated %s — read, finished %s", result.After.Title, date.Format("2006-01-02"))
+			if rating != nil {
+				human = fmt.Sprintf("Updated %s — read, %d/5, finished %s", result.After.Title, *rating, date.Format("2006-01-02"))
+			}
+			return write(cmd, output, human)
+		},
+	}
+	finish.Flags().StringVar(&finishDate, "date", "", "finish date in YYYY-MM-DD (default: today)")
+	finish.Flags().IntVar(&finishRating, "rating", 0, "optional rating from 1 through 5")
+	root.AddCommand(finish)
 	root.AddCommand(&cobra.Command{
 		Use:   "rate <isbn> <rating>",
 		Short: "Set and verify a book rating",
@@ -325,7 +393,8 @@ func exitCode(err error) int {
 	switch {
 	case errors.Is(err, errUsage):
 		return 2
-	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrInvalidRating), errors.Is(err, domain.ErrInvalidLimit):
+	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrInvalidRating),
+		errors.Is(err, domain.ErrInvalidDate), errors.Is(err, domain.ErrInvalidLimit):
 		return 2
 	case errors.Is(err, profile.ErrBusy):
 		return 8
