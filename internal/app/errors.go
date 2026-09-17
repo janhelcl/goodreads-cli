@@ -1,7 +1,11 @@
 package app
 
 import (
+	"context"
+	"errors"
+
 	"github.com/janhelcl/goodreads-cli/internal/browser"
+	"github.com/janhelcl/goodreads-cli/internal/domain"
 	"github.com/janhelcl/goodreads-cli/internal/goodreads"
 	"github.com/janhelcl/goodreads-cli/internal/profile"
 )
@@ -13,10 +17,89 @@ var (
 	ErrBrowserUnavailable = browser.ErrUnavailable
 	ErrBrowserLaunch      = browser.ErrLaunch
 	ErrSessionExpired     = goodreads.ErrSessionExpired
+	ErrLoginCancelled     = goodreads.ErrLoginCancelled
 	ErrBookNotFound       = goodreads.ErrBookNotFound
 	ErrBookAmbiguous      = goodreads.ErrBookAmbiguous
 	ErrMutationAmbiguous  = goodreads.ErrMutationAmbiguous
 	ErrVerificationFailed = goodreads.ErrVerificationFailed
 	ErrCompatibility      = goodreads.ErrCompatibility
 	ErrPageLimit          = goodreads.ErrPageLimit
+	ErrExportFailed       = goodreads.ErrExportFailed
 )
+
+type ErrorKind string
+
+const (
+	ErrorInternal           ErrorKind = "internal_error"
+	ErrorInvalidArguments   ErrorKind = "invalid_arguments"
+	ErrorBusy               ErrorKind = "busy"
+	ErrorBrowserUnavailable ErrorKind = "browser_unavailable"
+	ErrorBrowserLaunch      ErrorKind = "browser_launch"
+	ErrorNotAuthenticated   ErrorKind = "not_authenticated"
+	ErrorLoginCancelled     ErrorKind = "login_cancelled"
+	ErrorBookNotFound       ErrorKind = "book_not_found"
+	ErrorBookAmbiguous      ErrorKind = "book_ambiguous"
+	ErrorMutationAmbiguous  ErrorKind = "mutation_ambiguous"
+	ErrorVerificationFailed ErrorKind = "verification_failed"
+	ErrorCompatibility      ErrorKind = "compatibility"
+	ErrorExportFailed       ErrorKind = "export_failed"
+	ErrorTimeout            ErrorKind = "timeout"
+	ErrorCancelled          ErrorKind = "cancelled"
+)
+
+type ErrorDescriptor struct {
+	Kind    ErrorKind
+	Message string
+}
+
+// DescribeError is the shared safe error boundary for CLI and MCP transports.
+func DescribeError(err error) ErrorDescriptor {
+	switch {
+	case errors.Is(err, domain.ErrInvalidISBN):
+		return ErrorDescriptor{ErrorInvalidArguments, "isbn must be a valid ISBN-10 or ISBN-13."}
+	case errors.Is(err, domain.ErrInvalidStatus):
+		return ErrorDescriptor{ErrorInvalidArguments, "status must be to-read, currently-reading, or read."}
+	case errors.Is(err, domain.ErrInvalidRating):
+		return ErrorDescriptor{ErrorInvalidArguments, "rating must be 1 through 5."}
+	case errors.Is(err, domain.ErrInvalidDate):
+		return ErrorDescriptor{ErrorInvalidArguments, "date must be YYYY-MM-DD."}
+	case errors.Is(err, domain.ErrInvalidLimit):
+		return ErrorDescriptor{ErrorInvalidArguments, "limit must be 1 through 200."}
+	case errors.Is(err, domain.ErrInvalidReview):
+		return ErrorDescriptor{ErrorInvalidArguments, "provide a non-empty review or explicitly clear it."}
+	case errors.Is(err, domain.ErrExportExists):
+		return ErrorDescriptor{ErrorInvalidArguments, "Export destination already exists; use --force to replace it."}
+	case errors.Is(err, domain.ErrExportDestination):
+		return ErrorDescriptor{ErrorInvalidArguments, "Invalid export destination."}
+	case errors.Is(err, ErrBusy):
+		return ErrorDescriptor{ErrorBusy, "Goodreads browser profile is busy; retry after the other command finishes."}
+	case errors.Is(err, ErrBrowserUnavailable):
+		return ErrorDescriptor{ErrorBrowserUnavailable, "No supported Chrome, Chromium, or Edge browser found. Set GOODREADS_CLI_BROWSER to its executable."}
+	case errors.Is(err, ErrBrowserLaunch):
+		return ErrorDescriptor{ErrorBrowserLaunch, "Could not launch the dedicated browser."}
+	case errors.Is(err, ErrCompatibility):
+		return ErrorDescriptor{ErrorCompatibility, "Goodreads UI changed; retry with --headed for diagnosis."}
+	case errors.Is(err, ErrPageLimit):
+		return ErrorDescriptor{ErrorCompatibility, "Library scan reached its page limit before the result could be confirmed."}
+	case errors.Is(err, ErrBookNotFound):
+		return ErrorDescriptor{ErrorBookNotFound, "No library entry has that exact ISBN."}
+	case errors.Is(err, ErrBookAmbiguous):
+		return ErrorDescriptor{ErrorBookAmbiguous, "Multiple library entries have that ISBN; exact edition is ambiguous."}
+	case errors.Is(err, ErrMutationAmbiguous):
+		return ErrorDescriptor{ErrorMutationAmbiguous, "Goodreads may have changed the book, but the result could not be confirmed; do not retry automatically."}
+	case errors.Is(err, ErrVerificationFailed):
+		return ErrorDescriptor{ErrorVerificationFailed, "Goodreads did not match the requested change after readback."}
+	case errors.Is(err, ErrSessionExpired):
+		return ErrorDescriptor{ErrorNotAuthenticated, "Goodreads session expired; run gr login."}
+	case errors.Is(err, ErrLoginCancelled):
+		return ErrorDescriptor{ErrorLoginCancelled, "Goodreads login was cancelled or timed out."}
+	case errors.Is(err, ErrExportFailed):
+		return ErrorDescriptor{ErrorExportFailed, "Goodreads could not generate or download a valid export."}
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrorDescriptor{ErrorTimeout, "Goodreads operation timed out."}
+	case errors.Is(err, context.Canceled):
+		return ErrorDescriptor{ErrorCancelled, "Goodreads operation was cancelled."}
+	default:
+		return ErrorDescriptor{ErrorInternal, "Goodreads operation failed."}
+	}
+}

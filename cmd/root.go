@@ -16,47 +16,31 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/janhelcl/goodreads-cli/internal/app"
-	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
-	"github.com/janhelcl/goodreads-cli/internal/goodreads"
 	internalmcp "github.com/janhelcl/goodreads-cli/internal/mcp"
-	"github.com/janhelcl/goodreads-cli/internal/profile"
+	"github.com/janhelcl/goodreads-cli/internal/output"
 )
 
 var errUsage = errors.New("invalid command usage")
 
-type authFactory func(headed bool) (app.Service, error)
+type serviceFactory func(headed bool) (app.Service, error)
 type mcpRunner func(context.Context, app.Service, internalmcp.Options) error
 
-type mutationOutput struct {
-	OK        bool              `json:"ok"`
-	Operation string            `json:"operation"`
-	ISBN13    string            `json:"isbn13"`
-	BookID    string            `json:"book_id"`
-	Title     string            `json:"title"`
-	Changes   domain.BookUpdate `json:"changes"`
-	Verified  bool              `json:"verified"`
-}
-
-func defaultAuthFactory(headed bool) (app.Service, error) {
-	paths, err := profile.DefaultPaths()
-	if err != nil {
-		return nil, err
-	}
-	return app.Auth{Factory: browser.RodFactory{}, Paths: paths, Headed: headed}, nil
+func defaultServiceFactory(headed bool) (app.Service, error) {
+	return app.NewService(app.Config{Headed: headed})
 }
 
 func Execute() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr, defaultAuthFactory))
+	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr, defaultServiceFactory))
 }
 
-func run(args []string, out, errOut io.Writer, factory authFactory) int {
+func run(args []string, out, errOut io.Writer, factory serviceFactory) int {
 	return runContext(context.Background(), args, out, errOut, factory)
 }
 
-func runContext(ctx context.Context, args []string, out, errOut io.Writer, factory authFactory) int {
+func runContext(ctx context.Context, args []string, out, errOut io.Writer, factory serviceFactory) int {
 	return runContextWithMCP(ctx, args, out, errOut, factory, internalmcp.Run)
 }
 
@@ -64,7 +48,7 @@ func runContextWithMCP(
 	ctx context.Context,
 	args []string,
 	out, errOut io.Writer,
-	factory authFactory,
+	factory serviceFactory,
 	runMCP mcpRunner,
 ) int {
 	root := newRootWithMCP(out, errOut, factory, runMCP)
@@ -80,11 +64,11 @@ func runContextWithMCP(
 	return 0
 }
 
-func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
+func newRoot(out, errOut io.Writer, factory serviceFactory) *cobra.Command {
 	return newRootWithMCP(out, errOut, factory, internalmcp.Run)
 }
 
-func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner) *cobra.Command {
+func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRunner) *cobra.Command {
 	var jsonOutput bool
 	var headed bool
 	var debug bool
@@ -297,16 +281,7 @@ func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner
 			if err != nil {
 				return err
 			}
-			output := mutationOutput{
-				OK:        true,
-				Operation: result.Operation,
-				ISBN13:    isbn.ISBN13,
-				BookID:    result.After.BookID,
-				Title:     result.After.Title,
-				Changes:   result.Changes,
-				Verified:  result.Verified,
-			}
-			return write(cmd, output, fmt.Sprintf("Added %s — %s", result.After.Title, status))
+			return write(cmd, output.NewMutation(result, isbn), fmt.Sprintf("Added %s — %s", result.After.Title, status))
 		},
 	}
 	add.Flags().StringVar(&addShelf, "shelf", string(domain.StatusToRead), "to-read, currently-reading, or read")
@@ -335,16 +310,7 @@ func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner
 			if err != nil {
 				return err
 			}
-			output := mutationOutput{
-				OK:        true,
-				Operation: result.Operation,
-				ISBN13:    isbn.ISBN13,
-				BookID:    result.After.BookID,
-				Title:     result.After.Title,
-				Changes:   result.Changes,
-				Verified:  result.Verified,
-			}
-			return write(cmd, output, fmt.Sprintf("Started %s — currently-reading", result.After.Title))
+			return write(cmd, output.NewMutation(result, isbn), fmt.Sprintf("Started %s — currently-reading", result.After.Title))
 		},
 	})
 	var finishDate string
@@ -387,20 +353,11 @@ func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner
 			if err != nil {
 				return err
 			}
-			output := mutationOutput{
-				OK:        true,
-				Operation: result.Operation,
-				ISBN13:    isbn.ISBN13,
-				BookID:    result.After.BookID,
-				Title:     result.After.Title,
-				Changes:   result.Changes,
-				Verified:  result.Verified,
-			}
 			human := fmt.Sprintf("Updated %s — read, finished %s", result.After.Title, date.Format("2006-01-02"))
 			if rating != nil {
 				human = fmt.Sprintf("Updated %s — read, %d/5, finished %s", result.After.Title, *rating, date.Format("2006-01-02"))
 			}
-			return write(cmd, output, human)
+			return write(cmd, output.NewMutation(result, isbn), human)
 		},
 	}
 	finish.Flags().StringVar(&finishDate, "date", "", "finish date in YYYY-MM-DD (default: today)")
@@ -434,16 +391,7 @@ func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner
 			if err != nil {
 				return err
 			}
-			output := mutationOutput{
-				OK:        true,
-				Operation: result.Operation,
-				ISBN13:    isbn.ISBN13,
-				BookID:    result.After.BookID,
-				Title:     result.After.Title,
-				Changes:   result.Changes,
-				Verified:  result.Verified,
-			}
-			return write(cmd, output, fmt.Sprintf("Updated %s — %d/5", result.After.Title, rating))
+			return write(cmd, output.NewMutation(result, isbn), fmt.Sprintf("Updated %s — %d/5", result.After.Title, rating))
 		},
 	})
 	var reviewText string
@@ -499,20 +447,11 @@ func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner
 			if err != nil {
 				return err
 			}
-			output := mutationOutput{
-				OK:        true,
-				Operation: result.Operation,
-				ISBN13:    isbn.ISBN13,
-				BookID:    result.After.BookID,
-				Title:     result.After.Title,
-				Changes:   result.Changes,
-				Verified:  result.Verified,
-			}
 			human := fmt.Sprintf("Updated %s — review saved", result.After.Title)
 			if clearReview {
 				human = fmt.Sprintf("Updated %s — review cleared", result.After.Title)
 			}
-			return write(cmd, output, human)
+			return write(cmd, output.NewMutation(result, isbn), human)
 		},
 	}
 	review.Flags().StringVar(&reviewText, "text", "", "review text")
@@ -568,29 +507,25 @@ func newRootWithMCP(out, errOut io.Writer, factory authFactory, runMCP mcpRunner
 }
 
 func exitCode(err error) int {
-	switch {
-	case errors.Is(err, errUsage):
+	if errors.Is(err, errUsage) {
 		return 2
-	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrInvalidRating),
-		errors.Is(err, domain.ErrInvalidDate), errors.Is(err, domain.ErrInvalidLimit),
-		errors.Is(err, domain.ErrInvalidReview), errors.Is(err, domain.ErrExportDestination),
-		errors.Is(err, domain.ErrExportExists):
+	}
+	switch app.DescribeError(err).Kind {
+	case app.ErrorInvalidArguments:
 		return 2
-	case errors.Is(err, profile.ErrBusy):
+	case app.ErrorBusy:
 		return 8
-	case errors.Is(err, browser.ErrUnavailable):
+	case app.ErrorBrowserUnavailable:
 		return 9
-	case errors.Is(err, goodreads.ErrCompatibility):
+	case app.ErrorCompatibility:
 		return 7
-	case errors.Is(err, goodreads.ErrBookNotFound), errors.Is(err, goodreads.ErrBookAmbiguous):
+	case app.ErrorBookNotFound, app.ErrorBookAmbiguous:
 		return 4
-	case errors.Is(err, goodreads.ErrMutationAmbiguous), errors.Is(err, goodreads.ErrVerificationFailed):
+	case app.ErrorMutationAmbiguous, app.ErrorVerificationFailed:
 		return 5
-	case errors.Is(err, goodreads.ErrSessionExpired), errors.Is(err, goodreads.ErrLoginCancelled), errors.Is(err, browser.ErrLaunch):
+	case app.ErrorNotAuthenticated, app.ErrorLoginCancelled, app.ErrorBrowserLaunch:
 		return 3
-	case errors.Is(err, context.DeadlineExceeded):
-		return 6
-	case errors.Is(err, goodreads.ErrExportFailed):
+	case app.ErrorTimeout, app.ErrorExportFailed:
 		return 6
 	default:
 		return 1
@@ -598,40 +533,8 @@ func exitCode(err error) int {
 }
 
 func publicError(err error) string {
-	switch {
-	case errors.Is(err, errUsage):
+	if errors.Is(err, errUsage) {
 		return err.Error()
-	case errors.Is(err, profile.ErrBusy):
-		return "Goodreads browser profile is busy; retry after the other command finishes."
-	case errors.Is(err, browser.ErrUnavailable):
-		return "No supported Chrome, Chromium, or Edge browser found. Set GOODREADS_CLI_BROWSER to its executable."
-	case errors.Is(err, browser.ErrLaunch):
-		return "Could not launch the dedicated browser."
-	case errors.Is(err, goodreads.ErrCompatibility):
-		return "Goodreads UI changed; retry with --headed for diagnosis."
-	case errors.Is(err, goodreads.ErrPageLimit):
-		return "Library scan reached its page limit before the result could be confirmed."
-	case errors.Is(err, goodreads.ErrBookNotFound):
-		return "No library entry has that exact ISBN."
-	case errors.Is(err, goodreads.ErrBookAmbiguous):
-		return "Multiple library entries have that ISBN; exact edition is ambiguous."
-	case errors.Is(err, goodreads.ErrMutationAmbiguous):
-		return "Goodreads may have changed the book, but the result could not be confirmed; do not retry automatically."
-	case errors.Is(err, goodreads.ErrVerificationFailed):
-		return "Goodreads did not match the requested change after readback."
-	case errors.Is(err, goodreads.ErrSessionExpired):
-		return "Goodreads session expired; run gr login."
-	case errors.Is(err, goodreads.ErrLoginCancelled):
-		return "Goodreads login was cancelled or timed out."
-	case errors.Is(err, domain.ErrExportExists):
-		return "Export destination already exists; use --force to replace it."
-	case errors.Is(err, domain.ErrExportDestination):
-		return "Invalid export destination."
-	case errors.Is(err, goodreads.ErrExportFailed):
-		return "Goodreads could not generate or download a valid export."
-	case errors.Is(err, context.DeadlineExceeded):
-		return "Goodreads operation timed out."
-	default:
-		return "Goodreads operation failed."
 	}
+	return app.DescribeError(err).Message
 }

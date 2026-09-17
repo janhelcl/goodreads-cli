@@ -14,7 +14,6 @@ import (
 
 	"github.com/janhelcl/goodreads-cli/internal/app"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
-	"github.com/janhelcl/goodreads-cli/internal/goodreads"
 )
 
 type serviceStub struct {
@@ -39,12 +38,12 @@ type serviceStub struct {
 	maxActive    int
 }
 
-func (s *serviceStub) Login(context.Context) (goodreads.ConnectionStatus, error) {
-	return goodreads.ConnectionStatus{}, s.err
+func (s *serviceStub) Login(context.Context) (app.ConnectionStatus, error) {
+	return app.ConnectionStatus{}, s.err
 }
 
-func (s *serviceStub) Status(context.Context) (goodreads.ConnectionStatus, error) {
-	return goodreads.ConnectionStatus{}, s.err
+func (s *serviceStub) Status(context.Context) (app.ConnectionStatus, error) {
+	return app.ConnectionStatus{}, s.err
 }
 
 func (s *serviceStub) Logout(context.Context) (app.LogoutResult, error) {

@@ -19,7 +19,7 @@ type exportDestination struct {
 	force   bool
 }
 
-func (a Auth) Export(ctx context.Context, destination string, force bool) (domain.ExportResult, error) {
+func (s *service) Export(ctx context.Context, destination string, force bool) (result domain.ExportResult, err error) {
 	prepared, err := prepareExportDestination(destination, force)
 	if err != nil {
 		return domain.ExportResult{}, err
@@ -36,32 +36,16 @@ func (a Auth) Export(ctx context.Context, destination string, force bool) (domai
 		return domain.ExportResult{}, fmt.Errorf("%w: temporary download unavailable", goodreads.ErrExportFailed)
 	}
 
-	lock, err := a.acquire(ctx)
-	if err != nil {
-		return domain.ExportResult{}, err
-	}
-	defer lock.Release()
-	exists, err := a.Paths.HasBrowser()
-	if err != nil {
-		return domain.ExportResult{}, err
-	}
-	if !exists {
-		return domain.ExportResult{}, goodreads.ErrSessionExpired
-	}
-	b, err := a.Factory.Launch(ctx, browser.LaunchOptions{
-		ProfileDir: a.Paths.Browser, BrowserPath: a.BrowserPath, Headless: !a.Headed,
+	err = s.withBrowser(ctx, requireProfile, browser.LaunchOptions{
+		Headless:    !s.headed,
 		DownloadDir: downloadDir,
+	}, func(b browser.Browser) error {
+		var callErr error
+		result, callErr = goodreads.DownloadExport(ctx, b)
+		return callErr
 	})
 	if err != nil {
 		return domain.ExportResult{}, err
-	}
-	result, err := goodreads.DownloadExport(ctx, b)
-	closeErr := b.Close()
-	if err != nil {
-		return domain.ExportResult{}, err
-	}
-	if closeErr != nil {
-		return domain.ExportResult{}, closeErr
 	}
 	if prepared.staging == "" {
 		return result, nil

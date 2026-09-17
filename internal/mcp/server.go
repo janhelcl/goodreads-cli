@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 
 	"github.com/janhelcl/goodreads-cli/internal/app"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
+	"github.com/janhelcl/goodreads-cli/internal/output"
 )
 
 const (
@@ -60,16 +60,6 @@ type ReviewBookInput struct {
 	ISBN   string  `json:"isbn"`
 	Review *string `json:"review,omitempty"`
 	Clear  bool    `json:"clear,omitempty"`
-}
-
-type MutationOutput struct {
-	OK        bool              `json:"ok"`
-	Operation string            `json:"operation"`
-	ISBN13    string            `json:"isbn13"`
-	BookID    string            `json:"book_id"`
-	Title     string            `json:"title"`
-	Changes   domain.BookUpdate `json:"changes"`
-	Verified  bool              `json:"verified"`
 }
 
 type ToolError struct {
@@ -240,17 +230,17 @@ func (a *adapter) addBook(
 	ctx context.Context,
 	_ *sdk.CallToolRequest,
 	input AddBookInput,
-) (*sdk.CallToolResult, MutationOutput, error) {
+) (*sdk.CallToolResult, output.Mutation, error) {
 	isbn, err := normalizeISBN(input.ISBN)
 	if err != nil {
-		return nil, MutationOutput{}, err
+		return nil, output.Mutation{}, err
 	}
 	status := domain.StatusToRead
 	if input.Status != nil {
 		status = domain.ReadingStatus(*input.Status)
 	}
 	if !status.Valid() {
-		return nil, MutationOutput{}, safeError(domain.ErrInvalidStatus)
+		return nil, output.Mutation{}, safeError(domain.ErrInvalidStatus)
 	}
 	return a.mutate(ctx, 2*time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
 		return a.service.Add(ctx, isbn, status)
@@ -261,10 +251,10 @@ func (a *adapter) startReading(
 	ctx context.Context,
 	_ *sdk.CallToolRequest,
 	input ISBNInput,
-) (*sdk.CallToolResult, MutationOutput, error) {
+) (*sdk.CallToolResult, output.Mutation, error) {
 	isbn, err := normalizeISBN(input.ISBN)
 	if err != nil {
-		return nil, MutationOutput{}, err
+		return nil, output.Mutation{}, err
 	}
 	return a.mutate(ctx, time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
 		return a.service.Start(ctx, isbn)
@@ -275,21 +265,21 @@ func (a *adapter) finishReading(
 	ctx context.Context,
 	_ *sdk.CallToolRequest,
 	input FinishReadingInput,
-) (*sdk.CallToolResult, MutationOutput, error) {
+) (*sdk.CallToolResult, output.Mutation, error) {
 	isbn, err := normalizeISBN(input.ISBN)
 	if err != nil {
-		return nil, MutationOutput{}, err
+		return nil, output.Mutation{}, err
 	}
 	date := a.now().In(time.Local)
 	if input.Date != nil {
 		date, err = time.ParseInLocation("2006-01-02", *input.Date, time.Local)
 		if err != nil || date.Format("2006-01-02") != *input.Date {
-			return nil, MutationOutput{}, safeError(domain.ErrInvalidDate)
+			return nil, output.Mutation{}, safeError(domain.ErrInvalidDate)
 		}
 	}
 	if input.Rating != nil {
 		if err := domain.ValidateRating(*input.Rating); err != nil {
-			return nil, MutationOutput{}, safeError(err)
+			return nil, output.Mutation{}, safeError(err)
 		}
 	}
 	return a.mutate(ctx, 10*time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
@@ -301,13 +291,13 @@ func (a *adapter) rateBook(
 	ctx context.Context,
 	_ *sdk.CallToolRequest,
 	input RateBookInput,
-) (*sdk.CallToolResult, MutationOutput, error) {
+) (*sdk.CallToolResult, output.Mutation, error) {
 	isbn, err := normalizeISBN(input.ISBN)
 	if err != nil {
-		return nil, MutationOutput{}, err
+		return nil, output.Mutation{}, err
 	}
 	if err := domain.ValidateRating(input.Rating); err != nil {
-		return nil, MutationOutput{}, safeError(err)
+		return nil, output.Mutation{}, safeError(err)
 	}
 	return a.mutate(ctx, time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
 		return a.service.Rate(ctx, isbn, input.Rating)
@@ -318,15 +308,15 @@ func (a *adapter) reviewBook(
 	ctx context.Context,
 	_ *sdk.CallToolRequest,
 	input ReviewBookInput,
-) (*sdk.CallToolResult, MutationOutput, error) {
+) (*sdk.CallToolResult, output.Mutation, error) {
 	isbn, err := normalizeISBN(input.ISBN)
 	if err != nil {
-		return nil, MutationOutput{}, err
+		return nil, output.Mutation{}, err
 	}
 	if input.Review == nil && !input.Clear ||
 		input.Review != nil && input.Clear ||
 		input.Review != nil && strings.TrimSpace(*input.Review) == "" {
-		return nil, MutationOutput{}, safeError(domain.ErrInvalidReview)
+		return nil, output.Mutation{}, safeError(domain.ErrInvalidReview)
 	}
 	review := input.Review
 	if input.Clear {
@@ -343,24 +333,16 @@ func (a *adapter) mutate(
 	defaultTimeout time.Duration,
 	isbn domain.ISBN,
 	call func(context.Context) (domain.MutationResult, error),
-) (*sdk.CallToolResult, MutationOutput, error) {
-	return withServiceCall(ctx, a, defaultTimeout, func(ctx context.Context) (MutationOutput, error) {
+) (*sdk.CallToolResult, output.Mutation, error) {
+	return withServiceCall(ctx, a, defaultTimeout, func(ctx context.Context) (output.Mutation, error) {
 		result, err := call(ctx)
 		if err != nil {
-			return MutationOutput{}, err
+			return output.Mutation{}, err
 		}
 		if !result.Verified {
-			return MutationOutput{}, app.ErrVerificationFailed
+			return output.Mutation{}, app.ErrVerificationFailed
 		}
-		return MutationOutput{
-			OK:        true,
-			Operation: result.Operation,
-			ISBN13:    isbn.ISBN13,
-			BookID:    result.After.BookID,
-			Title:     result.After.Title,
-			Changes:   result.Changes,
-			Verified:  true,
-		}, nil
+		return output.NewMutation(result, isbn), nil
 	})
 }
 
@@ -401,45 +383,8 @@ func normalizeISBN(value string) (domain.ISBN, error) {
 }
 
 func safeError(err error) error {
-	code := "internal_error"
-	message := "Goodreads operation failed."
-	switch {
-	case errors.Is(err, domain.ErrInvalidISBN):
-		code, message = "invalid_arguments", "isbn must be a valid ISBN-10 or ISBN-13."
-	case errors.Is(err, domain.ErrInvalidStatus):
-		code, message = "invalid_arguments", "status must be to-read, currently-reading, or read."
-	case errors.Is(err, domain.ErrInvalidRating):
-		code, message = "invalid_arguments", "rating must be 1 through 5."
-	case errors.Is(err, domain.ErrInvalidDate):
-		code, message = "invalid_arguments", "date must be YYYY-MM-DD."
-	case errors.Is(err, domain.ErrInvalidLimit):
-		code, message = "invalid_arguments", "limit must be 1 through 200."
-	case errors.Is(err, domain.ErrInvalidReview):
-		code, message = "invalid_arguments", "provide a non-empty review or set clear=true, but not both."
-	case errors.Is(err, app.ErrBusy):
-		code, message = "busy", "Goodreads browser profile is busy; retry after the other command finishes."
-	case errors.Is(err, app.ErrBrowserUnavailable):
-		code, message = "browser_unavailable", "No supported Chrome, Chromium, or Edge browser was found."
-	case errors.Is(err, app.ErrBrowserLaunch):
-		code, message = "browser_launch", "Could not launch the dedicated browser."
-	case errors.Is(err, app.ErrSessionExpired):
-		code, message = "not_authenticated", "Goodreads session is missing or expired; run gr login."
-	case errors.Is(err, app.ErrBookNotFound):
-		code, message = "book_not_found", "No library entry has that exact ISBN."
-	case errors.Is(err, app.ErrBookAmbiguous):
-		code, message = "book_ambiguous", "Multiple library entries have that ISBN; exact edition is ambiguous."
-	case errors.Is(err, app.ErrMutationAmbiguous):
-		code, message = "mutation_ambiguous", "Goodreads may have changed the book, but the result could not be confirmed; do not retry automatically."
-	case errors.Is(err, app.ErrVerificationFailed):
-		code, message = "verification_failed", "Goodreads did not match the requested change after readback."
-	case errors.Is(err, app.ErrCompatibility), errors.Is(err, app.ErrPageLimit):
-		code, message = "compatibility", "Goodreads UI changed; run the equivalent CLI command with --headed for diagnosis."
-	case errors.Is(err, context.DeadlineExceeded):
-		code, message = "timeout", "Goodreads operation timed out."
-	case errors.Is(err, context.Canceled):
-		code, message = "cancelled", "Goodreads operation was cancelled."
-	}
-	return ToolError{Code: code, Message: message}
+	description := app.DescribeError(err)
+	return ToolError{Code: string(description.Kind), Message: description.Message}
 }
 
 func normalizeToolErrors(next sdk.MethodHandler) sdk.MethodHandler {

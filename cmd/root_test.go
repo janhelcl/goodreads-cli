@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -10,13 +11,11 @@ import (
 
 	"github.com/janhelcl/goodreads-cli/internal/app"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
-	"github.com/janhelcl/goodreads-cli/internal/goodreads"
 	internalmcp "github.com/janhelcl/goodreads-cli/internal/mcp"
-	"github.com/janhelcl/goodreads-cli/internal/profile"
 )
 
 type authStub struct {
-	status      goodreads.ConnectionStatus
+	status      app.ConnectionStatus
 	books       []domain.Book
 	book        domain.Book
 	result      domain.MutationResult
@@ -27,13 +26,13 @@ type authStub struct {
 	wait        bool
 }
 
-func (a authStub) Login(context.Context) (goodreads.ConnectionStatus, error) {
+func (a authStub) Login(context.Context) (app.ConnectionStatus, error) {
 	return a.status, a.err
 }
-func (a authStub) Status(ctx context.Context) (goodreads.ConnectionStatus, error) {
+func (a authStub) Status(ctx context.Context) (app.ConnectionStatus, error) {
 	if a.wait {
 		<-ctx.Done()
-		return goodreads.ConnectionStatus{}, ctx.Err()
+		return app.ConnectionStatus{}, ctx.Err()
 	}
 	return a.status, a.err
 }
@@ -82,7 +81,7 @@ func TestAuthJSONContracts(t *testing.T) {
 	} {
 		var out, errOut bytes.Buffer
 		code := run(tc.args, &out, &errOut, func(bool) (app.Service, error) {
-			return authStub{status: goodreads.ConnectionStatus{Connected: true, SessionValid: true}}, nil
+			return authStub{status: app.ConnectionStatus{Connected: true, SessionValid: true}}, nil
 		})
 		if code != 0 || out.String() != tc.want {
 			t.Fatalf("%v: code=%d stdout=%q stderr=%q", tc.args, code, out.String(), errOut.String())
@@ -111,7 +110,7 @@ func TestRunContextPropagatesCancellation(t *testing.T) {
 	code := runContext(ctx, []string{"status"}, &out, &errOut, func(bool) (app.Service, error) {
 		return authStub{wait: true}, nil
 	})
-	if code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), "operation failed") {
+	if code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), "operation was cancelled") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
@@ -119,10 +118,19 @@ func TestRunContextPropagatesCancellation(t *testing.T) {
 func TestBusyErrorIsSafeAndTyped(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run([]string{"status", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
-		return authStub{err: profile.ErrBusy}, nil
+		return authStub{err: app.ErrBusy}, nil
 	})
 	if code != 8 || out.Len() != 0 || !strings.Contains(errOut.String(), "profile is busy") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestPageLimitUsesCompatibilityExitCode(t *testing.T) {
+	if code := exitCode(app.ErrPageLimit); code != 7 {
+		t.Fatalf("page limit exit code=%d", code)
+	}
+	if message := publicError(app.ErrPageLimit); !strings.Contains(message, "page limit") {
+		t.Fatalf("page limit message=%q", message)
 	}
 }
 
@@ -131,8 +139,8 @@ func TestMutationErrorsAreSafeAndTyped(t *testing.T) {
 		err  error
 		want string
 	}{
-		{goodreads.ErrMutationAmbiguous, "do not retry automatically"},
-		{&goodreads.VerificationError{Field: "review", Reason: "changed"}, "did not match"},
+		{app.ErrMutationAmbiguous, "do not retry automatically"},
+		{fmt.Errorf("%w: review changed", app.ErrVerificationFailed), "did not match"},
 	} {
 		var out, errOut bytes.Buffer
 		code := run([]string{"status", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
@@ -187,7 +195,7 @@ func TestGetExactISBNAndErrors(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	code = run([]string{"get", "9780306406157", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
-		return authStub{err: goodreads.ErrBookNotFound}, nil
+		return authStub{err: app.ErrBookNotFound}, nil
 	})
 	if code != 4 || out.Len() != 0 || !strings.Contains(errOut.String(), "exact ISBN") {
 		t.Fatalf("not found code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
@@ -503,7 +511,7 @@ func TestMCPCommandWiresServiceAndGlobalOptions(t *testing.T) {
 func TestDebugIsRedactedAndNoColorAccepted(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run([]string{"status", "--json", "--debug", "--no-color"}, &out, &errOut, func(bool) (app.Service, error) {
-		return authStub{err: goodreads.ErrCompatibility}, nil
+		return authStub{err: app.ErrCompatibility}, nil
 	})
 	if code != 7 || out.Len() != 0 || !strings.Contains(errOut.String(), "debug: operation=status") ||
 		!strings.Contains(errOut.String(), "debug: exit_code=7") || strings.Contains(errOut.String(), "review/list") {

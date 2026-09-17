@@ -31,29 +31,39 @@ func (p pageStub) Input(context.Context, string, string) error       { return ni
 func (p pageStub) SelectValue(context.Context, string, string) error { return nil }
 func (p pageStub) Value(context.Context, string) (string, error)     { return "", nil }
 
-type browserStub struct{}
+type browserStub struct {
+	closeErr   error
+	closeCalls int
+}
 
-func (browserStub) NewPage(_ context.Context, target string) (browser.Page, error) {
+func (*browserStub) NewPage(_ context.Context, target string) (browser.Page, error) {
 	if target == "https://www.goodreads.com/user/sign_in" {
 		return pageStub{url: "https://www.goodreads.com/"}, nil
 	}
 	return pageStub{url: "https://www.goodreads.com/review/list/123"}, nil
 }
-func (browserStub) Close() error { return nil }
+func (b *browserStub) Close() error {
+	b.closeCalls++
+	return b.closeErr
+}
 
 type factoryStub struct {
-	calls []browser.LaunchOptions
+	browser *browserStub
+	calls   []browser.LaunchOptions
 }
 
 func (f *factoryStub) Launch(_ context.Context, opts browser.LaunchOptions) (browser.Browser, error) {
 	f.calls = append(f.calls, opts)
-	return browserStub{}, nil
+	if f.browser == nil {
+		f.browser = &browserStub{}
+	}
+	return f.browser, nil
 }
 
 func TestAuthProfileLifecycle(t *testing.T) {
 	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
 	factory := &factoryStub{}
-	auth := Auth{Factory: factory, Paths: paths}
+	auth := service{factory: factory, paths: paths}
 	disconnected, err := auth.Status(context.Background())
 	if err != nil || disconnected.Connected || len(factory.calls) != 0 {
 		t.Fatalf("missing profile status=%+v err=%v launches=%d", disconnected, err, len(factory.calls))
@@ -88,7 +98,7 @@ func TestAuthProfileLifecycle(t *testing.T) {
 func TestAddRejectsInvalidStatusBeforeProfileOrBrowserWork(t *testing.T) {
 	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
 	factory := &factoryStub{}
-	auth := Auth{Factory: factory, Paths: paths}
+	auth := service{factory: factory, paths: paths}
 	isbn, err := domain.NormalizeISBN("9780306406157")
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +117,7 @@ func TestAddRejectsInvalidStatusBeforeProfileOrBrowserWork(t *testing.T) {
 func TestReviewRejectsOmittedValueBeforeProfileOrBrowserWork(t *testing.T) {
 	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
 	factory := &factoryStub{}
-	auth := Auth{Factory: factory, Paths: paths}
+	auth := service{factory: factory, paths: paths}
 	isbn, err := domain.NormalizeISBN("9780306406157")
 	if err != nil {
 		t.Fatal(err)
@@ -120,5 +130,29 @@ func TestReviewRejectsOmittedValueBeforeProfileOrBrowserWork(t *testing.T) {
 	}
 	if _, err := os.Stat(paths.Root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("profile path created for omitted review: %v", err)
+	}
+}
+
+func TestServiceReturnsBrowserCloseError(t *testing.T) {
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	closeErr := errors.New("close failed")
+	b := &browserStub{closeErr: closeErr}
+	auth := service{factory: &factoryStub{browser: b}, paths: paths}
+
+	if _, err := auth.Status(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("status close err=%v", err)
+	}
+	if b.closeCalls != 1 {
+		t.Fatalf("browser close calls=%d", b.closeCalls)
+	}
+	lock, err := paths.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("profile lock was not released: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
 	}
 }
