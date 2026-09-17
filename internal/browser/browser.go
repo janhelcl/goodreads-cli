@@ -132,6 +132,7 @@ type Page interface {
 	HTML(ctx context.Context) (string, error)
 	Click(ctx context.Context, selector string) error
 	ClickAndWaitForRequest(ctx context.Context, selector string) error
+	ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, selector string) error
 	Input(ctx context.Context, selector, value string) error
 	SelectValue(ctx context.Context, selector, value string) error
 	Value(ctx context.Context, selector string) (string, error)
@@ -412,6 +413,79 @@ func (p *rodPage) ClickAndWaitForRequest(ctx context.Context, selector string) e
 		return err
 	}
 	wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if requestID == "" {
+		return fmt.Errorf("no matching browser request observed")
+	}
+	if requestFailed {
+		return fmt.Errorf("browser request failed")
+	}
+	return nil
+}
+
+// ClickAndAcceptConfirmAndWaitForRequest performs a click whose exact,
+// caller-scoped control is expected to raise one JavaScript confirm dialog.
+// It accepts that dialog and then waits for the resulting allowed-origin
+// document/XHR/fetch request. The caller must still perform a fresh semantic
+// readback.
+func (p *rodPage) ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, selector string) error {
+	eventCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var requestID proto.NetworkRequestID
+	var requestFailed bool
+	waitRequest := p.rod.Context(eventCtx).EachEvent(
+		func(event *proto.NetworkRequestWillBeSent) {
+			if requestID != "" ||
+				(event.Type != proto.NetworkResourceTypeDocument &&
+					event.Type != proto.NetworkResourceTypeXHR &&
+					event.Type != proto.NetworkResourceTypeFetch) ||
+				!originAllowed(event.Request.URL, p.allowed) {
+				return
+			}
+			requestID = event.RequestID
+		},
+		func(event *proto.NetworkLoadingFinished) bool {
+			return requestID != "" && event.RequestID == requestID
+		},
+		func(event *proto.NetworkLoadingFailed) bool {
+			if requestID == "" || event.RequestID != requestID {
+				return false
+			}
+			requestFailed = true
+			return true
+		},
+	)
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err == nil {
+		err = element.ScrollIntoView()
+	}
+	if err != nil {
+		cancel()
+		waitRequest()
+		return err
+	}
+	waitDialog, handleDialog := p.rod.Context(ctx).HandleDialog()
+	clickResult := make(chan error, 1)
+	go func() {
+		clickResult <- element.Click(proto.InputMouseButtonLeft, 1)
+	}()
+	dialog := waitDialog()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if dialog.Type != proto.PageDialogTypeConfirm {
+		_ = handleDialog(&proto.PageHandleJavaScriptDialog{Accept: false})
+		return fmt.Errorf("expected a confirmation dialog")
+	}
+	if err := handleDialog(&proto.PageHandleJavaScriptDialog{Accept: true}); err != nil {
+		return err
+	}
+	if err := <-clickResult; err != nil {
+		return err
+	}
+	waitRequest()
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

@@ -251,6 +251,49 @@ func newRoot(out, errOut io.Writer, factory authFactory) *cobra.Command {
 			return write(cmd, book, fmt.Sprintf("%s — %s (%s)", book.Title, book.Author, book.Status))
 		},
 	})
+	var addShelf string
+	add := &cobra.Command{
+		Use:   "add <isbn>",
+		Short: "Add an exact edition and verify its shelf",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("%w: add requires one ISBN", errUsage)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			isbn, err := domain.NormalizeISBN(args[0])
+			if err != nil {
+				return fmt.Errorf("%w: %v", errUsage, err)
+			}
+			status := domain.ReadingStatus(addShelf)
+			if !status.Valid() {
+				return fmt.Errorf("%w: --shelf must be to-read, currently-reading, or read", errUsage)
+			}
+			service, err := factory(headed)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := newContext(cmd, 2*time.Minute)
+			defer cancel()
+			result, err := service.Add(ctx, isbn, status)
+			if err != nil {
+				return err
+			}
+			output := mutationOutput{
+				OK:        true,
+				Operation: result.Operation,
+				ISBN13:    isbn.ISBN13,
+				BookID:    result.After.BookID,
+				Title:     result.After.Title,
+				Changes:   result.Changes,
+				Verified:  result.Verified,
+			}
+			return write(cmd, output, fmt.Sprintf("Added %s — %s", result.After.Title, status))
+		},
+	}
+	add.Flags().StringVar(&addShelf, "shelf", string(domain.StatusToRead), "to-read, currently-reading, or read")
+	root.AddCommand(add)
 	root.AddCommand(&cobra.Command{
 		Use:   "start <isbn>",
 		Short: "Set and verify currently-reading status",

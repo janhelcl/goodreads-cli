@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
+	"github.com/janhelcl/goodreads-cli/internal/domain"
 	"github.com/janhelcl/goodreads-cli/internal/profile"
 )
 
@@ -19,9 +21,12 @@ func (p pageStub) Close() error                                          { retur
 func (p pageStub) HTML(context.Context) (string, error)                  { return "", nil }
 func (p pageStub) Click(context.Context, string) error                   { return nil }
 func (p pageStub) ClickAndWaitForRequest(context.Context, string) error  { return nil }
-func (p pageStub) Input(context.Context, string, string) error           { return nil }
-func (p pageStub) SelectValue(context.Context, string, string) error     { return nil }
-func (p pageStub) Value(context.Context, string) (string, error)         { return "", nil }
+func (p pageStub) ClickAndAcceptConfirmAndWaitForRequest(context.Context, string) error {
+	return nil
+}
+func (p pageStub) Input(context.Context, string, string) error       { return nil }
+func (p pageStub) SelectValue(context.Context, string, string) error { return nil }
+func (p pageStub) Value(context.Context, string) (string, error)     { return "", nil }
 
 type browserStub struct{}
 
@@ -74,5 +79,24 @@ func TestAuthProfileLifecycle(t *testing.T) {
 	exists, err := paths.HasBrowser()
 	if err != nil || exists {
 		t.Fatalf("profile still present: %v %v", exists, err)
+	}
+}
+
+func TestAddRejectsInvalidStatusBeforeProfileOrBrowserWork(t *testing.T) {
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	factory := &factoryStub{}
+	auth := Auth{Factory: factory, Paths: paths}
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Add(context.Background(), isbn, "paused"); !errors.Is(err, domain.ErrInvalidStatus) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(factory.calls) != 0 {
+		t.Fatalf("browser launched for invalid status: %+v", factory.calls)
+	}
+	if _, err := os.Stat(paths.Root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("profile path created for invalid status: %v", err)
 	}
 }

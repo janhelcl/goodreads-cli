@@ -38,6 +38,9 @@ func (p *fakePage) Click(_ context.Context, selector string) error {
 func (p *fakePage) ClickAndWaitForRequest(ctx context.Context, selector string) error {
 	return p.Click(ctx, selector)
 }
+func (p *fakePage) ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, selector string) error {
+	return p.Click(ctx, selector)
+}
 func (p *fakePage) Input(_ context.Context, selector, value string) error {
 	if p.input != nil {
 		return p.input(selector, value)

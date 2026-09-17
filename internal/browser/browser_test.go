@@ -110,7 +110,10 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/request" {
-			fmt.Fprint(w, `<html><body><button id="mutate" onclick="fetch('/mutation', {method: 'POST'})">mutate</button></body></html>`)
+			fmt.Fprint(w, `<html><body>
+				<button id="mutate" onclick="fetch('/mutation', {method: 'POST'})">mutate</button>
+				<button id="confirm" onclick="if (confirm('continue?')) fetch('/mutation', {method: 'POST'})">confirm</button>
+			</body></html>`)
 			return
 		}
 		if r.URL.Path == "/mutation" {
@@ -167,6 +170,21 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 	if mutationRequests.Load() != 1 {
 		_ = first.Close()
 		t.Fatalf("mutation request count=%d", mutationRequests.Load())
+	}
+	confirmPage, err := first.NewPage(ctx, server.URL+"/request")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if err := confirmPage.ClickAndAcceptConfirmAndWaitForRequest(ctx, "#confirm"); err != nil {
+		_ = confirmPage.Close()
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	_ = confirmPage.Close()
+	if mutationRequests.Load() != 2 {
+		_ = first.Close()
+		t.Fatalf("confirmed mutation request count=%d", mutationRequests.Load())
 	}
 	selectPage, err := first.NewPage(ctx, server.URL+"/select")
 	if err != nil {

@@ -425,11 +425,15 @@ func probeModernStatusMenu(
 		if i >= 80 {
 			return
 		}
+		text := strings.ToLower(strings.Join(strings.Fields(node.Text()), " "))
+		aria := strings.ToLower(node.AttrOr("aria-label", ""))
 		fmt.Printf("modern_dialog_control[%d] tag=%q class=%q type=%q attrs=%q text_status=%q value_status=%q text_pattern=%q aria_pattern=%q checked=%t disabled=%t\n",
 			i, goquery.NodeName(node), node.AttrOr("class", ""), node.AttrOr("type", ""),
 			attributeNames(node), coreStatusText(node), normalizedCoreStatus(node.AttrOr("value", "")),
-			valuePattern(strings.Join(strings.Fields(node.Text()), " ")),
-			valuePattern(node.AttrOr("aria-label", "")), node.Is("[checked]"), node.Is("[disabled]"))
+			valuePattern(text), valuePattern(aria), node.Is("[checked]"), node.Is("[disabled]"))
+		fmt.Printf("modern_dialog_control[%d]_remove=%t shelf=%t library=%t book=%t\n",
+			i, strings.Contains(text+" "+aria, "remove"), strings.Contains(text+" "+aria, "shelf"),
+			strings.Contains(text+" "+aria, "library"), strings.Contains(text+" "+aria, "book"))
 	})
 	reportStatusNodes(after.Selection)
 	beforeNodes := nodeCounts(doc.Selection)

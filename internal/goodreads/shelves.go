@@ -80,8 +80,8 @@ func parseShelfRow(row *goquery.Selection) (domain.Book, error) {
 	if len(match) != 2 {
 		return domain.Book{}, fmt.Errorf("%w at library.row: book ID missing", ErrCompatibility)
 	}
-	title := strings.TrimSpace(titleLink.Text())
-	author := strings.TrimSpace(row.Find("td.field.author .value a").First().Text())
+	title := strings.Join(strings.Fields(titleLink.Text()), " ")
+	author := strings.Join(strings.Fields(row.Find("td.field.author .value a").First().Text()), " ")
 	if title == "" || author == "" {
 		return domain.Book{}, fmt.Errorf("%w at library.row: title or author missing", ErrCompatibility)
 	}

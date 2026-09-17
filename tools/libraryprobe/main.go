@@ -138,9 +138,15 @@ func main() {
 		if len(os.Args) == 2 && (td.HasClass("review") || td.HasClass("actions")) {
 			td.Find("*").Each(func(j int, child *goquery.Selection) {
 				if j < 20 {
-					fmt.Printf("%s_node[%d] tag=%q class=%q attrs=%q route=%q\n",
+					fmt.Printf("%s_node[%d] tag=%q class=%q attrs=%q route=%q text_pattern=%q\n",
 						td.AttrOr("class", ""), j, goquery.NodeName(child), child.AttrOr("class", ""),
-						attributeNames(child), routeKind(child.AttrOr("href", "")))
+						attributeNames(child), routeKind(child.AttrOr("href", "")),
+						valuePattern(strings.Join(strings.Fields(child.Text()), " ")))
+					if routeKind(child.AttrOr("href", "")) == "review-destroy" {
+						fmt.Printf("%s_node[%d]_method=%q confirm_pattern=%q rel=%q\n",
+							td.AttrOr("class", ""), j, child.AttrOr("data-method", ""),
+							valuePattern(child.AttrOr("data-confirm", "")), child.AttrOr("rel", ""))
+					}
 				}
 			})
 		}
@@ -205,6 +211,8 @@ func routeKind(href string) string {
 		return "review-edit"
 	case strings.Contains(href, "/review/show"):
 		return "review-show"
+	case strings.Contains(href, "/review/destroy"):
+		return "review-destroy"
 	case strings.Contains(href, "/book/show"):
 		return "book-show"
 	case strings.Contains(href, "/shelf/"):

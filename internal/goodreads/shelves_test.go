@@ -43,6 +43,14 @@ func TestParseShelfPage(t *testing.T) {
 	}
 }
 
+func TestShelfParserNormalizesRenderedTitleWhitespace(t *testing.T) {
+	spaced := strings.Replace(shelfFixture, ">Invented Book</a>", ">\n Invented   Book \n</a>", 1)
+	page, err := parseShelfPage(spaced)
+	if err != nil || len(page.Books) != 1 || page.Books[0].Title != "Invented Book" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
 func TestShelfParserFailsClosedOnDrift(t *testing.T) {
 	for _, tc := range []struct{ name, html string }{
 		{"missing table", "<h1>My Books</h1>"},

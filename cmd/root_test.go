@@ -41,6 +41,9 @@ func (a authStub) Library(context.Context, domain.LibraryFilter) ([]domain.Book,
 func (a authStub) Get(context.Context, domain.ISBN) (domain.Book, error) {
 	return a.book, a.err
 }
+func (a authStub) Add(context.Context, domain.ISBN, domain.ReadingStatus) (domain.MutationResult, error) {
+	return a.result, a.err
+}
 func (a authStub) Rate(context.Context, domain.ISBN, int) (domain.MutationResult, error) {
 	return a.result, a.err
 }
@@ -171,6 +174,44 @@ func TestGetExactISBNAndErrors(t *testing.T) {
 	})
 	if code != 4 || out.Len() != 0 || !strings.Contains(errOut.String(), "exact ISBN") {
 		t.Fatalf("not found code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestAddJSONAndValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"add", "bad-isbn"},
+		{"add"},
+		{"add", "9781603580557", "--shelf", "paused"},
+		{"add", "9781603580557", "extra"},
+	} {
+		var out, errOut bytes.Buffer
+		called := false
+		code := run(args, &out, &errOut, func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		})
+		if code != 2 || called || out.Len() != 0 {
+			t.Fatalf("%v: code=%d called=%t stdout=%q", args, code, called, out.String())
+		}
+	}
+
+	status := domain.StatusCurrentlyReading
+	result := domain.MutationResult{
+		Operation: "add",
+		After: domain.Book{
+			BookID: "42", Title: "Invented Book", ISBN13: "9781603580557", Status: status,
+		},
+		Changes:  domain.BookUpdate{Status: &status},
+		Verified: true,
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"add", "9781603580557", "--shelf", "currently-reading", "--json"},
+		&out, &errOut, func(bool) (app.Service, error) {
+			return authStub{result: result}, nil
+		})
+	want := `{"ok":true,"operation":"add","isbn13":"9781603580557","book_id":"42","title":"Invented Book","changes":{"status":"currently-reading"},"verified":true}` + "\n"
+	if code != 0 || out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
 
