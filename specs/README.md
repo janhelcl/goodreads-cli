@@ -8,6 +8,8 @@ The product is intentionally small: a Go command-line client that lets humans an
 
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. When code and specs disagree, update one intentionally; do not silently reinterpret the specs.
 
+Versioned implementation plans live in [`../plans/`](../plans/). Plans describe sequencing, experiments, and delivery gates; they do not override this normative contract. The active plan is [`v0.1.1-hardening.md`](../plans/v0.1.1-hardening.md).
+
 ## Read this first
 
 1. [01-product.md](01-product.md) — product scope and invariants
@@ -32,6 +34,8 @@ The product is intentionally small: a Go command-line client that lets humans an
 - **Agent friendly.** Commands have deterministic JSON, stable errors, explicit mutations, and no prompts outside login.
 - **No book discovery responsibility.** Initial mutation commands are ISBN-first. Public metadata, recommendations, and fuzzy title resolution stay outside the tool.
 - **Fail closed on Goodreads drift.** Missing selectors, unexpected pages, or unverifiable mutations produce compatibility errors rather than guessed clicks.
+- **Incomplete scans are explicit.** A safety budget may stop an unusually large scan, but the result MUST be `scan_incomplete`, never a false not-found or generic compatibility result.
+- **Partial writes are observable.** A compound command that verifies an early write and then fails MUST reconcile the final Goodreads state and report a typed partial-mutation error. It MUST NOT roll back or replay automatically.
 
 ## Implementation order
 

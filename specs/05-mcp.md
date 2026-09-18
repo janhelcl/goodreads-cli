@@ -147,6 +147,10 @@ A successful mutation result always has `verified: true`. Ambiguous or mismatche
 
 Errors map from typed application errors and include safe, actionable messages. Compatibility errors may include the stable flow stage but not selectors, raw HTML, or private field contents.
 
+`partial_mutation` tool errors include structured safe details: operation, completed semantic steps, failed step, observed status/rating/date when available, and `retry_automatically: false`. They never include review text, title, account identifiers, raw URLs, selectors, or HTML.
+
+`scan_incomplete` means the adapter could not prove exact identity within its explicit safety budget and no mutation was attempted. Clients may ask the user to retry with a longer command timeout or a future supported scan-budget setting, but MUST NOT substitute fuzzy identity or a separate Goodreads script.
+
 ## Date/time semantics
 
 CLI `finish` may default to the local machine's date.

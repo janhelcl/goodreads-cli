@@ -138,6 +138,7 @@ Always redact or omit:
 - CSV row contents;
 - screenshots;
 - exact profile path in ordinary output.
+- ISBNs, book IDs, titles, and authors.
 
 Debug logging may include:
 
@@ -148,6 +149,9 @@ Debug logging may include:
 - selector alternative identifier, but not private element text;
 - pagination/retry counts;
 - high-level verification field names.
+- partial-mutation step names and observed status, numeric rating, or ISO date when needed to explain the failed command.
+
+`--debug` is useful only if it adds stable flow stage, elapsed duration, browser product/version, and typed error information beyond the ordinary public message. It must remain safe to paste into an issue by default.
 
 Review mismatches log neither expected nor observed text. Use lengths or a non-reversible diagnostic digest only when genuinely useful.
 

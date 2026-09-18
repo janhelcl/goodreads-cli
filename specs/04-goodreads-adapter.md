@@ -136,9 +136,11 @@ For each page:
 3. normalize book ID, title, author, ISBNs, rating, exclusive shelf, dates, custom shelves, and review when available;
 4. follow pagination only as needed for the caller's filter/limit;
 5. detect repeated pages or pagination loops;
-6. stop at a conservative page/request bound.
+6. distinguish actual shelf termination from safety-budget exhaustion.
 
 Missing optional data is represented explicitly. Missing data required for the operation is a compatibility error.
+
+For list operations, the caller's result limit bounds pagination. Exact-identity operations use a separate resolution strategy and MUST NOT inherit a small list-oriented page limit. Exhausting a documented page/request budget returns `ErrScanIncomplete`; it is not not-found and is not selector drift.
 
 The adapter must not retain parsed books after returning. Browser HTTP cache is acceptable runtime behavior; application-level result caching is not.
 
@@ -155,6 +157,14 @@ Resolution may use Goodreads' visible search/navigation UI or ISBN information o
 5. reject ambiguous, missing, or mismatched candidates.
 
 A title/author match alone is never sufficient. If Goodreads hides ISBNs needed for proof, record the alternative stable identity contract in the compatibility matrix before implementation.
+
+Before changing the existing full-shelf scan, run a focused compatibility experiment in this order:
+
+1. test whether the visible owner-library UI can filter/search by exact ISBN and prove the returned owner row;
+2. test whether a visible exact-ISBN book route can prove one stable Goodreads edition ID and whether the owner library can then be located by that ID;
+3. otherwise determine the largest proven shelf page size and paginate to actual termination under the operation context.
+
+The chosen path must share one implementation across `get` and all mutation commands. It must test absent, present, duplicate, unidentified-row, pagination-loop, and safety-budget cases. No undocumented endpoint or hidden CSV snapshot may substitute for the visible UI.
 
 ## Current-state capture
 
@@ -220,6 +230,8 @@ After a mutating click/submission:
 - allow a new user invocation to act idempotently from observed state.
 
 Already-satisfied desired state returns verified success without an unnecessary click when preservation checks pass.
+
+For compound mutations, a later failure after an earlier verified write triggers one final readback. If safe state is obtained, return `ErrPartialMutation` with completed steps, the failed step, and the non-sensitive observed fields. If even the final readback is inconclusive, return `ErrMutationAmbiguous`. Never compensate with automatic rollback or replay.
 
 ## Verification
 

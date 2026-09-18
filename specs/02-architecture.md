@@ -220,6 +220,14 @@ Local filtering is allowed for fields already loaded in this invocation. No resu
 
 `Get` MAY locate the book by navigating shelf/search UI or an exact Goodreads book page resolved from ISBN. It must reject ambiguous or mismatched results.
 
+Exact-edition resolution is a semantic adapter capability, not a CLI-specific loop. It SHOULD prefer a tested Goodreads owner-library lookup that can prove the exact ISBN or stable edition identity. If resolution requires pagination, the scanner must separate:
+
+- normal termination at the actual end of the shelf;
+- a repeated-page or pagination-loop compatibility failure; and
+- exhaustion of an explicit safety budget, reported as `ErrScanIncomplete`.
+
+A fixed small page count is not a supported-library definition. No mutation may start after an incomplete identity scan.
+
 ## Mutation flow
 
 A mutation should:
@@ -236,6 +244,18 @@ A mutation should:
 10. return `Verified=true` only when comparison succeeds.
 
 If completion is ambiguous, return an ambiguous/compatibility error and include safe troubleshooting guidance. Do not automatically replay the click or form submission.
+
+### Compound mutation reconciliation
+
+`add` with a non-default target status and `finish` are compound operations. Model their ordered semantic steps explicitly rather than assuming all-or-nothing behavior from the remote UI.
+
+After each mutating step:
+
+1. read back and verify that step;
+2. record only the verified semantic fields in memory;
+3. continue to the next requested step.
+
+If a later step fails after at least one verified write, perform one final readback when it is safe and return a typed `PartialMutationError`. The error carries the operation, completed steps, failed step, and safe observed state. It MUST NOT contain review text, raw HTML, selectors, account identifiers, or profile paths. Automatic rollback and automatic replay are prohibited.
 
 ## Selector and page contracts
 
@@ -317,13 +337,17 @@ Use typed application errors so CLI and MCP map failures consistently:
 - `ErrInvalidRating`
 - `ErrCompatibility`
 - `ErrMutationAmbiguous`
+- `ErrPartialMutation`
 - `ErrVerificationFailed`
+- `ErrScanIncomplete`
 - `ErrExportFailed`
 - `ErrBusy`
 - `ErrNetwork`
 - `ErrUnsupported`
 
 User-facing errors must be actionable without exposing cookies, authenticated HTML, review text, or profile contents.
+
+`ErrPartialMutation` is distinct from `ErrMutationAmbiguous`: the former proves that at least one semantic step completed and reports the reconciled safe state; the latter cannot prove whether the attempted write completed. `ErrScanIncomplete` means no mutation was attempted because exact identity could not be established within the scan budget.
 
 ## Observability
 

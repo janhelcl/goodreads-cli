@@ -32,6 +32,8 @@ These choices should not be reopened during routine implementation.
 | Remote MCP | Deferred pending a browser/profile security design |
 | Hosted model | No multi-user SaaS |
 | Telemetry | None by default |
+| Large-library lookup | Exact operations must not depend on a small fixed full-shelf page limit; budget exhaustion is a typed incomplete scan |
+| Compound mutation failure | Final readback plus typed partial-mutation error; no automatic rollback or replay |
 
 ## Superseded decisions
 
@@ -115,6 +117,8 @@ The compatibility spike in `07-testing-and-delivery.md` must answer:
 13. **Ambiguity:** what page markers and readback behavior distinguish failure, delayed success, and selector drift after a click?
 14. **Export:** how does the UI request a fresh CSV and how can the resulting browser download be tied to the invocation?
 15. **Headless challenges:** does Goodreads present challenges in headless mode that require rerunning headed?
+16. **Targeted owner lookup:** can the visible owner-library UI locate and prove one exact ISBN or stable edition ID without scanning every shelf page?
+17. **Large-library bounds:** what page size and safety budget cover realistic libraries while retaining loop and runaway protection?
 
 If #3 fails, stop and revisit the profile/browser approach. If #7 or #12 fails for an operation, do not ship that operation. If headless execution is unreliable but headed works, surface that result for a product decision rather than using evasion techniques.
 
@@ -128,6 +132,7 @@ If #3 fails, stop and revisit the profile/browser approach. If #7 or #12 fails f
 - Login and challenges require a local display and user interaction.
 - UI changes may temporarily disable commands until contracts and fixtures are updated.
 - Remote/mobile MCP is deferred.
+- v0.1.0 exact lookup is bounded to ten shelf pages; v0.1.1 replaces that product limitation with the resolution contract above.
 
 Do not introduce a local database or undocumented API to compensate for these limitations.
 

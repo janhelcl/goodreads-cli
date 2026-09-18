@@ -192,6 +192,8 @@ All mutation commands:
 
 A command MUST NOT automatically retry an ambiguous form submission or click. It may safely re-read state and return either verified success or an ambiguity error.
 
+For a compound command, failure after an earlier verified step is a partial mutation. The command performs one final readback when safe, exits non-zero, names the completed and failed steps without private content, and explicitly says not to retry automatically.
+
 ### `gr add <isbn>`
 
 ```text
@@ -275,6 +277,29 @@ JSON uses a stable object:
 
 `verified` MUST be `true` for a successful mutation. An unverified or mismatched outcome is an error, not a successful result with `verified=false`.
 
+## Partial mutation error
+
+A partial mutation is an error, not a success result. The application error exposes safe structured details to transport adapters:
+
+```json
+{
+  "code": "partial_mutation",
+  "operation": "finish",
+  "completed": ["status", "date"],
+  "failed": "rating",
+  "observed": {
+    "status": "read",
+    "date_read": "2026-09-18",
+    "rating": 3
+  },
+  "retry_automatically": false
+}
+```
+
+Human CLI output states the same facts concisely. It MUST NOT include review text, raw Goodreads content, account identifiers, or selectors. The CLI uses exit code 5. Existing `--json` success behavior remains unchanged; a future general JSON error-envelope decision is outside v0.1.1.
+
+An incomplete exact-identity scan is reported as `scan_incomplete`. It guarantees that no mutation was attempted and uses exit code 6.
+
 ## Exit codes
 
 Keep these stable once released:
@@ -285,8 +310,8 @@ Keep these stable once released:
 2 CLI usage / validation error
 3 authentication, session, or browser-launch error
 4 book not found / ISBN not resolved
-5 mutation ambiguous or verification failed
-6 network / remote service failure
+5 mutation ambiguous, partially completed, or verification failed
+6 network / remote service failure or incomplete bounded scan
 7 Goodreads UI compatibility drift
 8 operation busy / profile locked
 9 browser unavailable or unsupported
@@ -297,6 +322,8 @@ MCP maps the same application error taxonomy rather than shell codes.
 ## Browser diagnostics
 
 When a compatibility failure occurs, the error SHOULD suggest rerunning the same command with `--headed --debug`.
+
+`--debug` emits redacted operational events to stderr. At minimum it SHOULD report the operation, stable flow stage, elapsed duration, browser product/version, and typed error category. It MUST NOT emit selectors, raw URLs containing account identifiers, ISBN/title/review values, authenticated HTML, cookies, browser storage, or profile paths.
 
 A future explicit diagnostic flag may capture a screenshot or sanitized DOM snapshot. It must be opt-in, warn that Goodreads pages contain personal data, and never write cookies or credential fields.
 

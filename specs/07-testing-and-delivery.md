@@ -269,15 +269,17 @@ Requirements:
 
 ## CI
 
-Initial CI includes:
+Continuous CI runs for pull requests and pushes to `main` and includes:
 
 - `gofmt` check;
 - `go vet ./...`;
 - `go test ./...`;
-- race detector on Linux when reasonable;
+- race detector on Linux;
 - builds on Linux, macOS, and Windows;
 - dependency/vulnerability scan where practical;
-- optional Linux Chromium job for local-server browser tests.
+- a Linux Chromium job with `GOODREADS_BROWSER_TESTS=1` for local-server browser tests.
+
+The tag-triggered release workflow must run or depend on the same required checks before publishing artifacts. Browser-component tests use only local synthetic pages and require no Goodreads credentials.
 
 No live Goodreads calls or interactive sign-in in PR CI.
 
@@ -356,6 +358,26 @@ Before implementing remote HTTP MCP, write a separate decision covering profile 
 - unit, fixture, local-browser, application, and CLI tests pass;
 - live test-account smoke checks pass for the release browser matrix;
 - README accurately states browser requirements and limitations.
+
+## v0.1.1 hardening
+
+The execution sequence and per-slice acceptance criteria live in [`../plans/v0.1.1-hardening.md`](../plans/v0.1.1-hardening.md). The hardening release adds no new Goodreads product capability. It closes four reliability gaps:
+
+1. scalable exact-edition resolution with explicit incomplete-scan semantics;
+2. final-state reconciliation for partially completed compound mutations;
+3. required continuous/browser integration tests;
+4. typed network errors and useful redacted diagnostics.
+
+Release criteria for v0.1.1:
+
+- exact lookup succeeds against a synthetic library larger than ten pages;
+- safety-budget exhaustion returns `ErrScanIncomplete` and performs no mutation;
+- failure after every step of `add` and `finish` is injected and reconciled;
+- partial completion maps consistently through application, CLI, and MCP layers;
+- pull-request/main CI, race tests, target builds, and the Linux Chromium component job pass;
+- at least one synthetic flow executes the real Rod wrapper and production Goodreads contracts together;
+- `ErrNetwork`, `ErrScanIncomplete`, and `ErrPartialMutation` have stable redacted public mappings;
+- a fresh interactive `gr login` and the selected exact-resolution path are manually smoke-tested and recorded in the compatibility matrix.
 
 ## Compatibility policy
 

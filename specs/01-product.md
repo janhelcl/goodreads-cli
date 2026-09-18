@@ -97,6 +97,8 @@ The initial public mutation contract is ISBN-first.
 
 The adapter MAY search or navigate Goodreads as necessary to resolve an exact ISBN. It MUST NOT expose a general public Goodreads search API.
 
+Exact-ISBN operations MUST remain usable for libraries larger than an ordinary shelf-page window. A hard-coded pagination limit MUST NOT cause a known match to be reported as not-found or UI incompatibility. If a tested targeted lookup is unavailable and a bounded scan cannot reach a conclusive result, return an explicit incomplete-scan error without attempting a mutation.
+
 ## Reading status model
 
 The core status enum is:
@@ -144,6 +146,8 @@ Every mutation MUST:
 5. return success only when the requested fields match.
 
 The application MUST NOT equate a click, HTTP status, toast alone, or page navigation alone with verified success.
+
+Some semantic commands require multiple Goodreads writes. Each completed step MUST be verified independently. If a later step fails, the command MUST perform one final safe readback when possible and report a typed partial-mutation error containing only verified, non-sensitive state. It MUST NOT automatically roll back, replay, or claim that no change occurred.
 
 ## Browser behavior
 
