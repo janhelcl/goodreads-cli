@@ -50,6 +50,8 @@ var ratingTitles = map[int]string{
 	5: "it was amazing",
 }
 
+var ratingCompletionTimeout = 10 * time.Second
+
 // Rate changes one exact rendered edition through the owner shelf's rating
 // control, then reloads all preservation fields before reporting success.
 func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) (domain.MutationResult, error) {
@@ -89,7 +91,7 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 	clickErr := page.Click(ctx, selector)
 	var completionErr error
 	if clickErr == nil {
-		completionCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		completionCtx, cancel := context.WithTimeout(ctx, ratingCompletionTimeout)
 		completionErr = waitForRating(completionCtx, page, candidate, isbn, rating)
 		cancel()
 	}

@@ -73,10 +73,13 @@ func TestRodGoodreadsFlows(t *testing.T) {
 	signInURL = server.URL + "/user/sign_in"
 	libraryURL = server.URL + "/review/list"
 	allowedGoodreadsOrigins = []string{server.URL}
+	originalRatingCompletionTimeout := ratingCompletionTimeout
+	ratingCompletionTimeout = 250 * time.Millisecond
 	t.Cleanup(func() {
 		signInURL = originalSignIn
 		libraryURL = originalLibrary
 		allowedGoodreadsOrigins = originalOrigins
+		ratingCompletionTimeout = originalRatingCompletionTimeout
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -115,9 +118,7 @@ func TestRodGoodreadsFlows(t *testing.T) {
 	rating = 2
 	ambiguousRating = true
 	stateMu.Unlock()
-	ambiguousCtx, ambiguousCancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
-	_, err = Rate(ambiguousCtx, b, isbn, 4)
-	ambiguousCancel()
+	_, err = Rate(ctx, b, isbn, 4)
 	if !errors.Is(err, ErrMutationAmbiguous) || ratingRequests.Load() != 2 {
 		t.Fatalf("ambiguous rating err=%v requests=%d", err, ratingRequests.Load())
 	}
