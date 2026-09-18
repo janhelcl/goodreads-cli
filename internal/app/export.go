@@ -36,7 +36,7 @@ func (s *service) Export(ctx context.Context, destination string, force bool) (r
 		return domain.ExportResult{}, fmt.Errorf("%w: temporary download unavailable", goodreads.ErrExportFailed)
 	}
 
-	err = s.withBrowser(ctx, requireProfile, browser.LaunchOptions{
+	err = s.withBrowser(ctx, "export", requireProfile, browser.LaunchOptions{
 		Headless:    !s.headed,
 		DownloadDir: downloadDir,
 	}, func(b browser.Browser) error {

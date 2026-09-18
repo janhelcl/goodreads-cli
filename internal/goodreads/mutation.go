@@ -125,11 +125,29 @@ func findMutationCandidate(
 	stage string,
 	requireShelfChooser bool,
 ) (ratingCandidate, error) {
+	return resolveOwnedEdition(ctx, b, isbn, stage, requireShelfChooser, false)
+}
+
+// resolveOwnedEdition is the single exact owner-library resolver used by Get
+// and every mutation. An empty stage requests identity only; mutation callers
+// additionally validate the controls they need on the matched row.
+func resolveOwnedEdition(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	stage string,
+	requireShelfChooser bool,
+	rejectUnidentifiedMatch bool,
+) (ratingCandidate, error) {
 	target, _ := url.Parse(libraryURL)
 	visited := map[string]bool{}
 	var found ratingCandidate
 	matches := 0
-	for pageNumber := 0; pageNumber < maxShelfPages; pageNumber++ {
+	unidentified := false
+	for pageNumber := 0; pageNumber < maxExactShelfPages; pageNumber++ {
+		if err := ctx.Err(); err != nil {
+			return ratingCandidate{}, err
+		}
 		if visited[target.String()] {
 			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: pagination loop", ErrCompatibility)
 		}
@@ -169,13 +187,19 @@ func findMutationCandidate(
 				rowErr = err
 				return false
 			}
+			if book.ISBN10 == "" && book.ISBN13 == "" {
+				unidentified = true
+			}
 			if !exactISBN(book, isbn) {
 				return true
 			}
-			candidate, err := candidateFromRow(currentURL, row, book, stage, requireShelfChooser)
-			if err != nil {
-				rowErr = err
-				return false
+			candidate := ratingCandidate{Book: book}
+			if stage != "" {
+				candidate, err = candidateFromRow(currentURL, row, book, stage, requireShelfChooser)
+				if err != nil {
+					rowErr = err
+					return false
+				}
 			}
 			found = candidate
 			matches++
@@ -186,10 +210,15 @@ func findMutationCandidate(
 		}
 		if parsed.Next == "" {
 			switch {
-			case matches == 0:
-				return ratingCandidate{}, ErrBookNotFound
 			case matches > 1:
 				return ratingCandidate{}, ErrBookAmbiguous
+			case matches == 0:
+				if unidentified && rejectUnidentifiedMatch {
+					return ratingCandidate{}, fmt.Errorf("%w at library.row: ISBN missing; exact lookup incomplete", ErrCompatibility)
+				}
+				return ratingCandidate{}, ErrBookNotFound
+			case unidentified && rejectUnidentifiedMatch:
+				return ratingCandidate{}, fmt.Errorf("%w at library.row: ISBN missing; exact lookup incomplete", ErrCompatibility)
 			default:
 				return found, nil
 			}
@@ -199,11 +228,12 @@ func findMutationCandidate(
 			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: invalid next link", ErrCompatibility)
 		}
 		target = currentURL.ResolveReference(next)
-		if !isGoodreadsPage(target.String()) || target.Path != currentURL.Path {
+		if !isGoodreadsPage(target.String()) || target.Path != currentURL.Path ||
+			!samePaginationScope(currentURL, target) {
 			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: next link left shelf", ErrCompatibility)
 		}
 	}
-	return ratingCandidate{}, ErrPageLimit
+	return ratingCandidate{}, ErrScanIncomplete
 }
 
 func candidateFromRow(

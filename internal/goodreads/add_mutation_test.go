@@ -157,6 +157,36 @@ func TestAddExistingEditionUsesOwnerISBNWithoutPublicResolution(t *testing.T) {
 	}
 }
 
+func TestAddUsesResolvedBookIDWhenOwnerRowHasNoISBN(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	bookURL := "https://www.goodreads.com/book/show/42.Invented_Book"
+	search := &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")}
+	book := &fakePage{url: bookURL, html: addBookFixture(true)}
+	book.click = func(string) error {
+		t.Fatal("existing unidentified owner row was added again")
+		return nil
+	}
+	unknown := ownerStatusFixture(domain.StatusRead, false)
+	unknown = strings.Replace(unknown, "0-306-40615-2", "", 1)
+	unknown = strings.Replace(unknown, "9780306406157", "", 1)
+	owner := func() browser.Page {
+		return libraryTestPage(unknown, "https://www.goodreads.com/review/list/123")
+	}
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{
+			searchURL: search,
+			bookURL:   book,
+		},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {privatePage(), owner(), privatePage(), owner()},
+		},
+	}
+	if _, err := Add(context.Background(), b, isbn, domain.StatusToRead); !errors.Is(err, ErrCompatibility) {
+		t.Fatalf("unidentified existing edition was not rejected safely: %v", err)
+	}
+}
+
 func TestAddRejectsInvalidStatusBeforeBrowserWork(t *testing.T) {
 	isbn, err := domain.NormalizeISBN("9780306406157")
 	if err != nil {
@@ -178,6 +208,91 @@ func TestVerifyAddMutation(t *testing.T) {
 	after.Status = domain.StatusRead
 	if _, err := VerifyAddMutation(domain.Book{}, after, domain.StatusToRead, false); !errors.Is(err, ErrVerificationFailed) {
 		t.Fatalf("status mismatch accepted: %v", err)
+	}
+}
+
+func TestNewAddReconcilesStatusFailure(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	stepFailure := errors.New("status failed")
+	partialFailure := errors.New("partial")
+	reconcileCalls := 0
+	_, err := completeNewAdd(
+		context.Background(),
+		&fakeBrowser{},
+		isbn,
+		domain.StatusCurrentlyReading,
+		addOperations{
+			setStatus: func(context.Context, browser.Browser, domain.ISBN, domain.ReadingStatus) (domain.MutationResult, error) {
+				return domain.MutationResult{}, stepFailure
+			},
+			reconcile: func(_ context.Context, _ browser.Browser, _ domain.ISBN, operation string, completed []string, failed string, cause error) error {
+				reconcileCalls++
+				if operation != "add" || !equalStrings(completed, []string{"add"}) ||
+					failed != "status" || !errors.Is(cause, stepFailure) {
+					t.Fatalf("operation=%q completed=%v failed=%q cause=%v", operation, completed, failed, cause)
+				}
+				return partialFailure
+			},
+		},
+	)
+	if !errors.Is(err, partialFailure) || reconcileCalls != 1 {
+		t.Fatalf("err=%v reconcile calls=%d", err, reconcileCalls)
+	}
+}
+
+func TestNewAddCompletesWithoutReconciliation(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	before := ratingSnapshot()
+	before.Status = domain.StatusToRead
+	after := before
+	after.Status = domain.StatusCurrentlyReading
+	result, err := completeNewAdd(
+		context.Background(),
+		&fakeBrowser{},
+		isbn,
+		domain.StatusCurrentlyReading,
+		addOperations{
+			setStatus: func(context.Context, browser.Browser, domain.ISBN, domain.ReadingStatus) (domain.MutationResult, error) {
+				return domain.MutationResult{Before: before, After: after, Verified: true}, nil
+			},
+			reconcile: func(context.Context, browser.Browser, domain.ISBN, string, []string, string, error) error {
+				t.Fatal("successful add attempted reconciliation")
+				return nil
+			},
+		},
+	)
+	if err != nil || !result.Verified || result.Operation != "add" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestNewAddPreservesNestedStatusPartialDetails(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	nested := &domain.PartialMutationError{
+		Operation: "add",
+		Completed: []string{"status"},
+		Failed:    "date",
+	}
+	result, err := completeNewAdd(
+		context.Background(),
+		&fakeBrowser{},
+		isbn,
+		domain.StatusRead,
+		addOperations{
+			setStatus: func(context.Context, browser.Browser, domain.ISBN, domain.ReadingStatus) (domain.MutationResult, error) {
+				return domain.MutationResult{}, nested
+			},
+			reconcile: func(context.Context, browser.Browser, domain.ISBN, string, []string, string, error) error {
+				t.Fatal("nested partial mutation was reconciled twice")
+				return nil
+			},
+		},
+	)
+	var partial *domain.PartialMutationError
+	if result.Verified || !errors.As(err, &partial) ||
+		!equalStrings(partial.Completed, []string{"add", "status"}) ||
+		partial.Failed != "date" {
+		t.Fatalf("result=%+v partial=%+v err=%v", result, partial, err)
 	}
 }
 

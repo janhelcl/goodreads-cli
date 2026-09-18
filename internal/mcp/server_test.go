@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -307,6 +309,8 @@ func TestToolErrorsAreTypedActionableAndRedacted(t *testing.T) {
 	}{
 		{"busy", app.ErrBusy, "busy"},
 		{"auth", app.ErrSessionExpired, "not_authenticated"},
+		{"network", app.ErrNetwork, "network"},
+		{"scan incomplete", app.ErrScanIncomplete, "scan_incomplete"},
 		{"verification", errors.Join(app.ErrVerificationFailed, errors.New("review contained private text")), "verification_failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,6 +336,52 @@ func TestToolErrorsAreTypedActionableAndRedacted(t *testing.T) {
 				t.Fatalf("auth error is not actionable: %+v", safe)
 			}
 		})
+	}
+}
+
+func TestPartialMutationToolErrorIncludesOnlySafeState(t *testing.T) {
+	rating := 3
+	date := "2026-09-18"
+	partial := &domain.PartialMutationError{
+		Operation: "finish",
+		Completed: []string{"status", "date"},
+		Failed:    "rating",
+		Observed: domain.ObservedMutationState{
+			Status:   domain.StatusRead,
+			Rating:   &rating,
+			DateRead: &date,
+		},
+	}
+	service := &serviceStub{err: fmt.Errorf(
+		"private review ISBN title author selector URL HTML cookie storage form export profile: %w",
+		partial,
+	)}
+	session := connect(t, NewServer(service, Options{}))
+	result := callTool(t, session, "finish_reading", map[string]any{
+		"isbn": "9780306406157", "date": date, "rating": 4,
+	})
+	if !result.IsError || len(result.Content) != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	text := result.Content[0].(*sdk.TextContent).Text
+	var safe ToolError
+	if err := json.Unmarshal([]byte(text), &safe); err != nil ||
+		safe.Code != "partial_mutation" ||
+		safe.Operation != "finish" ||
+		!slices.Equal(safe.Completed, []string{"status", "date"}) ||
+		safe.Failed != "rating" ||
+		safe.Observed == nil ||
+		safe.Observed.Status != domain.StatusRead ||
+		safe.RetryAutomatically == nil || *safe.RetryAutomatically {
+		t.Fatalf("safe=%+v raw=%q err=%v", safe, text, err)
+	}
+	for _, forbidden := range []string{
+		"private review", "ISBN", "title", "author", "selector", "URL", "HTML",
+		"cookie", "storage", "form", "export", "profile", `"isbn"`, `"book_id"`, `"title"`, `"url"`,
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("partial error leaked %q: %q", forbidden, text)
+		}
 	}
 }
 

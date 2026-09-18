@@ -51,10 +51,16 @@ download, and either writes it to stdout or atomically installs `--out`.
 verified mutations through semantic tools; login remains a separate
 interactive CLI command.
 Version tags produce cross-platform release archives and a SHA-256 checksum
-manifest.
+manifest. Pull requests and `main` run formatting, vet, tests, race detection,
+vulnerability scanning, six target builds, and local-only Chrome integration
+flows before release packaging repeats those gates.
 Authentication, populated/filtered shelf reads, and reversible live canaries
 for add, status, rating, finish date, and review passed. Exact lookup remains
-fail-closed when any scanned row omits its ISBN. The
+fail-closed when any scanned row omits its ISBN. Exact-edition operations use a
+separate 100-page safety budget; exhausting it returns `scan_incomplete` and
+guarantees that no mutation was attempted. Compound `add` and `finish`
+operations report verified completed steps and one reconciled safe final state
+when a later step fails, and never roll back or replay automatically. The
 [compatibility matrix](specs/compatibility-matrix.md) records the tested scope
 and remaining gates.
 
@@ -80,3 +86,9 @@ returns safe typed errors when authentication or compatibility fails.
 For now, use an installed Chrome, Chromium, or Edge. `GOODREADS_CLI_BROWSER`
 may point to a supported executable; Rod-managed browser downloads remain
 disabled pending the first-run compatibility experiment.
+
+Use `--debug` for redacted operational events containing only stable operation
+and flow-stage names, elapsed time, browser product/version, error kind, and
+safe retry count. Debug output omits ISBNs, book/account identity, reviews,
+selectors, authenticated URLs/HTML, browser state, export rows, and profile
+paths.

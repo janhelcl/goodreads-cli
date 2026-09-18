@@ -128,3 +128,157 @@ func TestFinishAlreadySatisfiedDoesNotMutate(t *testing.T) {
 		t.Fatalf("result=%+v err=%v calls=%v", result, err, b.calls)
 	}
 }
+
+func TestFinishReconcilesFailuresAfterVerifiedSteps(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	date, _ := time.Parse("2006-01-02", "2026-09-18")
+	rating := 4
+	before := ratingSnapshot()
+	before.Status = domain.StatusCurrentlyReading
+	before.DateRead = nil
+	afterStatus := before
+	afterStatus.Status = domain.StatusRead
+	afterDate := afterStatus
+	dateText := date.Format("2006-01-02")
+	afterDate.DateRead = &dateText
+	stepFailure := errors.New("injected failure")
+	partialFailure := errors.New("reconciled partial failure")
+
+	for _, test := range []struct {
+		name          string
+		failStatus    bool
+		failDate      bool
+		failRating    bool
+		wantCompleted []string
+		wantFailed    string
+		wantReconcile int
+	}{
+		{"before any write", true, false, false, nil, "", 0},
+		{"after status", false, true, false, []string{"status"}, "date", 1},
+		{"after date", false, false, true, []string{"status", "date"}, "rating", 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reconcileCalls := 0
+			operations := finishOperations{
+				setStatus: func(context.Context, browser.Browser, domain.ISBN, domain.ReadingStatus, bool) (domain.MutationResult, error) {
+					if test.failStatus {
+						return domain.MutationResult{}, stepFailure
+					}
+					return domain.MutationResult{Before: before, After: afterStatus, Verified: true}, nil
+				},
+				setDate: func(context.Context, browser.Browser, domain.ISBN, time.Time) (domain.MutationResult, error) {
+					if test.failDate {
+						return domain.MutationResult{}, stepFailure
+					}
+					return domain.MutationResult{Before: afterStatus, After: afterDate, Verified: true}, nil
+				},
+				rate: func(context.Context, browser.Browser, domain.ISBN, int) (domain.MutationResult, error) {
+					if test.failRating {
+						return domain.MutationResult{}, stepFailure
+					}
+					afterRating := afterDate
+					afterRating.Rating = rating
+					return domain.MutationResult{Before: afterDate, After: afterRating, Verified: true}, nil
+				},
+				reconcile: func(_ context.Context, _ browser.Browser, _ domain.ISBN, operation string, completed []string, failed string, cause error) error {
+					reconcileCalls++
+					if operation != "finish" || !equalStrings(completed, test.wantCompleted) ||
+						failed != test.wantFailed || !errors.Is(cause, stepFailure) {
+						t.Fatalf("operation=%q completed=%v failed=%q cause=%v", operation, completed, failed, cause)
+					}
+					return partialFailure
+				},
+			}
+			_, gotErr := finishWithOperations(context.Background(), &fakeBrowser{}, isbn, date, &rating, operations)
+			if test.wantReconcile == 0 {
+				if !errors.Is(gotErr, stepFailure) {
+					t.Fatalf("error=%v", gotErr)
+				}
+			} else if !errors.Is(gotErr, partialFailure) {
+				t.Fatalf("error=%v", gotErr)
+			}
+			if reconcileCalls != test.wantReconcile {
+				t.Fatalf("reconcile calls=%d", reconcileCalls)
+			}
+		})
+	}
+}
+
+func TestFinishOperationsSucceedWithoutReconciliation(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	date, _ := time.Parse("2006-01-02", "2026-09-18")
+	rating := 4
+	before := ratingSnapshot()
+	before.Status = domain.StatusCurrentlyReading
+	before.DateRead = nil
+	afterStatus := before
+	afterStatus.Status = domain.StatusRead
+	afterDate := afterStatus
+	dateText := date.Format("2006-01-02")
+	afterDate.DateRead = &dateText
+	afterRating := afterDate
+	afterRating.Rating = rating
+	operations := finishOperations{
+		setStatus: func(context.Context, browser.Browser, domain.ISBN, domain.ReadingStatus, bool) (domain.MutationResult, error) {
+			return domain.MutationResult{Before: before, After: afterStatus, Verified: true}, nil
+		},
+		setDate: func(context.Context, browser.Browser, domain.ISBN, time.Time) (domain.MutationResult, error) {
+			return domain.MutationResult{Before: afterStatus, After: afterDate, Verified: true}, nil
+		},
+		rate: func(context.Context, browser.Browser, domain.ISBN, int) (domain.MutationResult, error) {
+			return domain.MutationResult{Before: afterDate, After: afterRating, Verified: true}, nil
+		},
+		reconcile: func(context.Context, browser.Browser, domain.ISBN, string, []string, string, error) error {
+			t.Fatal("successful finish attempted reconciliation")
+			return nil
+		},
+	}
+	result, err := finishWithOperations(context.Background(), &fakeBrowser{}, isbn, date, &rating, operations)
+	if err != nil || !result.Verified {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestCompoundFailurePerformsOneSafeFinalReadback(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	const pageURL = "https://www.goodreads.com/review/list/123"
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		libraryURL: libraryTestPage(exactScanFixture(1, true, 0), pageURL),
+	}}
+	err := reconcileCompoundFailure(
+		context.Background(), b, isbn, "finish", []string{"status", "date"}, "rating", errors.New("private cause"),
+	)
+	var partial *domain.PartialMutationError
+	if !errors.As(err, &partial) || len(b.calls) != 1 ||
+		!equalStrings(partial.Completed, []string{"status", "date"}) ||
+		partial.Failed != "rating" || partial.Observed.Status != domain.StatusRead ||
+		partial.Observed.Rating == nil || *partial.Observed.Rating != 2 ||
+		partial.RetryAutomatically {
+		t.Fatalf("partial=%+v err=%v calls=%v", partial, err, b.calls)
+	}
+
+	failed := &fakeBrowser{pages: map[string]browser.Page{
+		libraryURL: libraryTestPage("", pageURL),
+	}}
+	err = reconcileCompoundFailure(
+		context.Background(), failed, isbn, "finish", []string{"status"}, "date", errors.New("private cause"),
+	)
+	if !errors.Is(err, ErrMutationAmbiguous) || len(failed.calls) != 1 {
+		t.Fatalf("failed reconciliation err=%v calls=%v", err, failed.calls)
+	}
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}

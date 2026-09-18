@@ -25,6 +25,7 @@ var (
 	ErrUnavailable = errors.New("supported Chrome, Chromium, or Edge browser unavailable")
 	ErrLaunch      = errors.New("could not launch dedicated browser")
 	ErrOrigin      = errors.New("unexpected browser navigation origin")
+	ErrNetwork     = errors.New("browser network request failed")
 )
 
 type Executable struct {
@@ -108,6 +109,10 @@ func validateExecutable(ctx context.Context, path string) (Executable, error) {
 	return Executable{Path: resolved, Product: product, Version: version}, nil
 }
 
+func numericVersion(value string) string {
+	return regexp.MustCompile(`[0-9]+(?:\.[0-9]+)+`).FindString(value)
+}
+
 type LaunchOptions struct {
 	ProfileDir       string
 	Headless         bool
@@ -124,6 +129,15 @@ type Factory interface {
 type Browser interface {
 	NewPage(ctx context.Context, targetURL string) (Page, error)
 	Close() error
+}
+
+type RuntimeInfo struct {
+	Product string
+	Version string
+}
+
+type RuntimeInfoProvider interface {
+	RuntimeInfo() RuntimeInfo
 }
 
 type Download struct {
@@ -202,6 +216,7 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 	b := &rodBrowser{
 		rod: r, launcher: l, allowed: allowed, login: opts.InteractiveLogin,
 		downloadDir: opts.DownloadDir,
+		runtimeInfo: RuntimeInfo{Product: exe.Product, Version: numericVersion(exe.Version)},
 	}
 	b.stopCancellation = context.AfterFunc(ctx, func() { _ = b.Close() })
 	if err := recordBrowserProduct(opts.ProfileDir, exe.Product); err != nil {
@@ -278,6 +293,11 @@ type rodBrowser struct {
 	stopCancellation func() bool
 	closeOnce        sync.Once
 	closeErr         error
+	runtimeInfo      RuntimeInfo
+}
+
+func (b *rodBrowser) RuntimeInfo() RuntimeInfo {
+	return b.runtimeInfo
 }
 
 func (b *rodBrowser) NewPage(ctx context.Context, targetURL string) (Page, error) {
@@ -286,12 +306,12 @@ func (b *rodBrowser) NewPage(ctx context.Context, targetURL string) (Page, error
 	}
 	p, err := b.rod.Context(ctx).Page(proto.TargetCreateTarget{URL: targetURL})
 	if err != nil {
-		return nil, err
+		return nil, classifyRuntimeError(err)
 	}
 	page := &rodPage{rod: p, allowed: b.allowed, login: b.login, downloadDir: b.downloadDir}
 	if err := p.Context(ctx).WaitLoad(); err != nil {
 		_ = p.Close()
-		return nil, err
+		return nil, classifyRuntimeError(err)
 	}
 	if _, err := page.URL(ctx); err != nil {
 		_ = p.Close()
@@ -330,7 +350,7 @@ type rodPage struct {
 func (p *rodPage) URL(ctx context.Context) (string, error) {
 	info, err := p.rod.Context(ctx).Info()
 	if err != nil {
-		return "", err
+		return "", classifyRuntimeError(err)
 	}
 	if !p.login && !originAllowed(info.URL, p.allowed) {
 		return "", ErrOrigin
@@ -440,7 +460,7 @@ func (p *rodPage) ClickAndWaitForRequest(ctx context.Context, selector string) e
 		return fmt.Errorf("no matching browser request observed")
 	}
 	if requestFailed {
-		return fmt.Errorf("browser request failed")
+		return ErrNetwork
 	}
 	return nil
 }
@@ -513,9 +533,28 @@ func (p *rodPage) ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, se
 		return fmt.Errorf("no matching browser request observed")
 	}
 	if requestFailed {
-		return fmt.Errorf("browser request failed")
+		return ErrNetwork
 	}
 	return nil
+}
+
+func classifyRuntimeError(err error) error {
+	if err == nil ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrOrigin) {
+		return err
+	}
+	var networkError net.Error
+	lower := strings.ToLower(err.Error())
+	if errors.As(err, &networkError) ||
+		strings.Contains(lower, "net::err_") ||
+		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "network changed") {
+		return fmt.Errorf("%w: %v", ErrNetwork, err)
+	}
+	return err
 }
 
 func (p *rodPage) ClickAndWaitForDownload(ctx context.Context, selector string) (Download, error) {

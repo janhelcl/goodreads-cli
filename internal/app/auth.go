@@ -17,7 +17,7 @@ func connectionStatus(status goodreads.ConnectionStatus) ConnectionStatus {
 }
 
 func (s *service) Login(ctx context.Context) (result ConnectionStatus, err error) {
-	err = s.withBrowser(ctx, createProfile, browser.LaunchOptions{InteractiveLogin: true}, func(b browser.Browser) error {
+	err = s.withBrowser(ctx, "login", createProfile, browser.LaunchOptions{InteractiveLogin: true}, func(b browser.Browser) error {
 		status, err := goodreads.Login(ctx, b)
 		result = connectionStatus(status)
 		return err
@@ -26,7 +26,7 @@ func (s *service) Login(ctx context.Context) (result ConnectionStatus, err error
 }
 
 func (s *service) Status(ctx context.Context) (result ConnectionStatus, err error) {
-	err = s.withBrowser(ctx, allowMissingProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
+	err = s.withBrowser(ctx, "status", allowMissingProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
 		status, err := goodreads.Status(ctx, b)
 		result = connectionStatus(status)
 		return err
@@ -46,7 +46,7 @@ func (s *service) Library(ctx context.Context, filter domain.LibraryFilter) (boo
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
-	err = s.withBrowser(ctx, requireProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
+	err = s.withBrowser(ctx, "library", requireProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
 		var callErr error
 		books, callErr = goodreads.Library(ctx, b, filter)
 		return callErr
@@ -55,7 +55,7 @@ func (s *service) Library(ctx context.Context, filter domain.LibraryFilter) (boo
 }
 
 func (s *service) Get(ctx context.Context, isbn domain.ISBN) (book domain.Book, err error) {
-	err = s.withBrowser(ctx, requireProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
+	err = s.withBrowser(ctx, "get", requireProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
 		var callErr error
 		book, callErr = goodreads.Get(ctx, b, isbn)
 		return callErr
@@ -65,9 +65,10 @@ func (s *service) Get(ctx context.Context, isbn domain.ISBN) (book domain.Book, 
 
 func (s *service) mutate(
 	ctx context.Context,
+	operation string,
 	call func(browser.Browser) (domain.MutationResult, error),
 ) (result domain.MutationResult, err error) {
-	err = s.withBrowser(ctx, requireProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
+	err = s.withBrowser(ctx, operation, requireProfile, browser.LaunchOptions{Headless: !s.headed}, func(b browser.Browser) error {
 		var callErr error
 		result, callErr = call(b)
 		return callErr
@@ -89,7 +90,7 @@ func (s *service) Add(
 	if !status.Valid() {
 		return domain.MutationResult{}, domain.ErrInvalidStatus
 	}
-	return s.mutate(ctx, func(b browser.Browser) (domain.MutationResult, error) {
+	return s.mutate(ctx, "add", func(b browser.Browser) (domain.MutationResult, error) {
 		return goodreads.Add(ctx, b, isbn, status)
 	})
 }
@@ -98,13 +99,13 @@ func (s *service) Rate(ctx context.Context, isbn domain.ISBN, rating int) (domai
 	if err := domain.ValidateRating(rating); err != nil {
 		return domain.MutationResult{}, err
 	}
-	return s.mutate(ctx, func(b browser.Browser) (domain.MutationResult, error) {
+	return s.mutate(ctx, "rate", func(b browser.Browser) (domain.MutationResult, error) {
 		return goodreads.Rate(ctx, b, isbn, rating)
 	})
 }
 
 func (s *service) Start(ctx context.Context, isbn domain.ISBN) (domain.MutationResult, error) {
-	return s.mutate(ctx, func(b browser.Browser) (domain.MutationResult, error) {
+	return s.mutate(ctx, "start", func(b browser.Browser) (domain.MutationResult, error) {
 		return goodreads.Start(ctx, b, isbn)
 	})
 }
@@ -123,7 +124,7 @@ func (s *service) Finish(
 			return domain.MutationResult{}, err
 		}
 	}
-	return s.mutate(ctx, func(b browser.Browser) (domain.MutationResult, error) {
+	return s.mutate(ctx, "finish", func(b browser.Browser) (domain.MutationResult, error) {
 		return goodreads.Finish(ctx, b, isbn, date, rating)
 	})
 }
@@ -136,7 +137,7 @@ func (s *service) Review(
 	if review == nil {
 		return domain.MutationResult{}, domain.ErrInvalidReview
 	}
-	return s.mutate(ctx, func(b browser.Browser) (domain.MutationResult, error) {
+	return s.mutate(ctx, "review", func(b browser.Browser) (domain.MutationResult, error) {
 		return goodreads.Review(ctx, b, isbn, review)
 	})
 }

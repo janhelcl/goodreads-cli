@@ -26,25 +26,62 @@ func Finish(
 			return domain.MutationResult{}, err
 		}
 	}
-	statusResult, err := setStatus(ctx, b, isbn, domain.StatusRead, true)
+	return finishWithOperations(ctx, b, isbn, date, rating, finishOperations{
+		setStatus: setStatus,
+		setDate:   SetFinishDate,
+		rate:      Rate,
+		reconcile: reconcileCompoundFailure,
+	})
+}
+
+type finishOperations struct {
+	setStatus func(context.Context, browser.Browser, domain.ISBN, domain.ReadingStatus, bool) (domain.MutationResult, error)
+	setDate   func(context.Context, browser.Browser, domain.ISBN, time.Time) (domain.MutationResult, error)
+	rate      func(context.Context, browser.Browser, domain.ISBN, int) (domain.MutationResult, error)
+	reconcile func(context.Context, browser.Browser, domain.ISBN, string, []string, string, error) error
+}
+
+func finishWithOperations(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	date time.Time,
+	rating *int,
+	operations finishOperations,
+) (domain.MutationResult, error) {
+	completed := []string{}
+	statusResult, err := operations.setStatus(ctx, b, isbn, domain.StatusRead, true)
 	if err != nil {
 		return domain.MutationResult{}, err
+	}
+	if statusChanged(statusResult) {
+		completed = append(completed, "status")
 	}
 	before := statusResult.Before
 
-	dateResult, err := SetFinishDate(ctx, b, isbn, date)
+	dateResult, err := operations.setDate(ctx, b, isbn, date)
 	if err != nil {
-		return domain.MutationResult{}, err
+		return domain.MutationResult{}, operations.reconcile(ctx, b, isbn, "finish", completed, "date", err)
+	}
+	if dateChanged(dateResult) {
+		completed = append(completed, "date")
 	}
 	after := dateResult.After
 	if rating != nil {
-		ratingResult, err := Rate(ctx, b, isbn, *rating)
+		ratingResult, err := operations.rate(ctx, b, isbn, *rating)
 		if err != nil {
-			return domain.MutationResult{}, err
+			return domain.MutationResult{}, operations.reconcile(ctx, b, isbn, "finish", completed, "rating", err)
+		}
+		if ratingChanged(ratingResult) {
+			completed = append(completed, "rating")
 		}
 		after = ratingResult.After
 	}
-	return VerifyFinishMutation(before, after, date.Format("2006-01-02"), rating)
+	result, err := VerifyFinishMutation(before, after, date.Format("2006-01-02"), rating)
+	if err != nil {
+		return domain.MutationResult{}, operations.reconcile(ctx, b, isbn, "finish", completed, "verify", err)
+	}
+	return result, nil
 }
 
 func VerifyFinishMutation(

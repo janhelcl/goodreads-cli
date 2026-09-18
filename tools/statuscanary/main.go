@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -18,9 +19,11 @@ import (
 
 const confirmation = "CONFIRM_REVERSIBLE_STATUS_WRITE"
 const restoreConfirmation = "CONFIRM_STATUS_RESTORATION"
+const partialConfirmation = "CONFIRM_REVERSIBLE_PARTIAL_FINISH_WRITE"
 
 func main() {
-	if len(os.Args) != 5 || (os.Args[4] != confirmation && os.Args[4] != restoreConfirmation) {
+	if len(os.Args) != 5 ||
+		(os.Args[4] != confirmation && os.Args[4] != restoreConfirmation && os.Args[4] != partialConfirmation) {
 		fail("expected ISBN, original status, temporary status, and an explicit confirmation")
 	}
 	isbn, err := domain.NormalizeISBN(os.Args[1])
@@ -30,6 +33,7 @@ func main() {
 	original := domain.ReadingStatus(os.Args[2])
 	temporary := domain.ReadingStatus(os.Args[3])
 	restorationOnly := os.Args[4] == restoreConfirmation && original == temporary
+	partialProbe := os.Args[4] == partialConfirmation
 	if !original.Valid() || !temporary.Valid() || (original == temporary && !restorationOnly) {
 		fail("expected two different valid statuses")
 	}
@@ -85,6 +89,24 @@ func main() {
 		failAfterLaunch("observed original status differed; observed state was restored")
 	}
 	fmt.Println("temporary_change_verified", forward.Verified)
+	if partialProbe {
+		partialErr := goodreads.ReconcilePartialMutationLiveProbe(
+			ctx, b, isbn, "finish", []string{"status"}, "date",
+		)
+		var partial *domain.PartialMutationError
+		if !errors.As(partialErr, &partial) ||
+			partial.Operation != "finish" ||
+			len(partial.Completed) != 1 || partial.Completed[0] != "status" ||
+			partial.Failed != "date" ||
+			partial.Observed.Status != temporary ||
+			partial.RetryAutomatically {
+			if _, restoreErr := goodreads.SetStatus(ctx, b, isbn, original); restoreErr != nil {
+				failAfterLaunch("partial reconciliation failed and restoration could not be verified")
+			}
+			failAfterLaunch("partial reconciliation did not return the expected safe state")
+		}
+		fmt.Println("partial_mutation_verified", true)
+	}
 
 	restored, err := goodreads.SetStatus(ctx, b, isbn, original)
 	if forward.Before.DateRead == nil {

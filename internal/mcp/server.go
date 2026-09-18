@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -61,8 +62,13 @@ type ReviewBookInput struct {
 }
 
 type ToolError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code               string                        `json:"code"`
+	Message            string                        `json:"message"`
+	Operation          string                        `json:"operation,omitempty"`
+	Completed          []string                      `json:"completed,omitempty"`
+	Failed             string                        `json:"failed,omitempty"`
+	Observed           *domain.ObservedMutationState `json:"observed,omitempty"`
+	RetryAutomatically *bool                         `json:"retry_automatically,omitempty"`
 }
 
 func (e ToolError) Error() string {
@@ -382,7 +388,18 @@ func normalizeISBN(value string) (domain.ISBN, error) {
 
 func safeError(err error) error {
 	description := app.DescribeError(err)
-	return ToolError{Code: string(description.Kind), Message: description.Message}
+	result := ToolError{Code: string(description.Kind), Message: description.Message}
+	var partial *domain.PartialMutationError
+	if errors.As(err, &partial) {
+		retry := false
+		observed := partial.Observed
+		result.Operation = partial.Operation
+		result.Completed = append([]string(nil), partial.Completed...)
+		result.Failed = partial.Failed
+		result.Observed = &observed
+		result.RetryAutomatically = &retry
+	}
+	return result
 }
 
 func normalizeToolErrors(next sdk.MethodHandler) sdk.MethodHandler {

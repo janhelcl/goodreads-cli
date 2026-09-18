@@ -73,7 +73,8 @@ func parseShelfRow(row *goquery.Selection) (domain.Book, error) {
 	}
 	href, _ := titleLink.Attr("href")
 	u, err := url.Parse(href)
-	if err != nil || !isGoodreadsPage((&url.URL{Scheme: "https", Host: "www.goodreads.com"}).ResolveReference(u).String()) {
+	base, baseErr := url.Parse(allowedGoodreadsOrigins[0])
+	if err != nil || baseErr != nil || !isGoodreadsPage(base.ResolveReference(u).String()) {
 		return domain.Book{}, fmt.Errorf("%w at library.row: invalid book link", ErrCompatibility)
 	}
 	match := bookPath.FindStringSubmatch(u.Path)

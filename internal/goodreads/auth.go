@@ -8,13 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 )
 
-const (
-	signInURL  = "https://www.goodreads.com/user/sign_in"
-	libraryURL = "https://www.goodreads.com/review/list"
-	signOutCSS = "a[href*='/user/sign_out']"
+const signOutCSS = "a[href*='/user/sign_out']"
+
+var (
+	signInURL               = "https://www.goodreads.com/user/sign_in"
+	libraryURL              = "https://www.goodreads.com/review/list"
+	allowedGoodreadsOrigins = []string{"https://www.goodreads.com", "https://goodreads.com"}
 )
 
 var (
@@ -114,8 +117,18 @@ func Status(ctx context.Context, b browser.Browser) (ConnectionStatus, error) {
 	if strings.HasPrefix(u.Path, "/user/sign_in") {
 		return ConnectionStatus{}, nil
 	}
+	if knownRemoteFailurePath(u.Path) {
+		return ConnectionStatus{}, fmt.Errorf("%w at auth.private-library", browser.ErrNetwork)
+	}
 	if u.Path != "/review/list" && !strings.HasPrefix(u.Path, "/review/list/") {
 		return ConnectionStatus{}, fmt.Errorf("%w at auth.private-library: unexpected page", ErrCompatibility)
+	}
+	html, err := p.HTML(ctx)
+	if err != nil {
+		return ConnectionStatus{}, fmt.Errorf("auth.private-library: DOM unavailable: %w", err)
+	}
+	if remoteFailureDocument(html) {
+		return ConnectionStatus{}, fmt.Errorf("%w at auth.private-library", browser.ErrNetwork)
 	}
 	heading, err := p.HasText(ctx, "h1", "^My Books$")
 	if err != nil {
@@ -139,7 +152,63 @@ func Status(ctx context.Context, b browser.Browser) (ConnectionStatus, error) {
 	return ConnectionStatus{Connected: true, SessionValid: true}, nil
 }
 
+func knownRemoteFailurePath(path string) bool {
+	return path == "/error" ||
+		strings.HasPrefix(path, "/error/") ||
+		path == "/maintenance" ||
+		strings.HasPrefix(path, "/maintenance/")
+}
+
+func remoteFailureDocument(raw string) bool {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(raw))
+	if err != nil {
+		return false
+	}
+	failed := false
+	doc.Find("title,h1").EachWithBreak(func(_ int, selection *goquery.Selection) bool {
+		text := strings.ToLower(strings.Join(strings.Fields(selection.Text()), " "))
+		for _, marker := range []string{
+			"service unavailable",
+			"too many requests",
+			"internal server error",
+			"temporarily unavailable",
+			"goodreads is over capacity",
+		} {
+			if strings.Contains(text, marker) {
+				failed = true
+				return false
+			}
+		}
+		return true
+	})
+	return failed
+}
+
 func isGoodreadsPage(raw string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && (u.Hostname() == "www.goodreads.com" || u.Hostname() == "goodreads.com") && u.User == nil && (u.Port() == "" || u.Port() == "443")
+	if err != nil || u.User != nil || u.Host == "" {
+		return false
+	}
+	for _, rawOrigin := range allowedGoodreadsOrigins {
+		origin, err := url.Parse(rawOrigin)
+		if err == nil && u.Scheme == origin.Scheme &&
+			strings.EqualFold(u.Hostname(), origin.Hostname()) &&
+			goodreadsPort(u) == goodreadsPort(origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func goodreadsPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	if u.Scheme == "http" {
+		return "80"
+	}
+	return ""
 }

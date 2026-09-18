@@ -46,6 +46,9 @@ func (b *browserStub) Close() error {
 	b.closeCalls++
 	return b.closeErr
 }
+func (*browserStub) RuntimeInfo() browser.RuntimeInfo {
+	return browser.RuntimeInfo{Product: "Chrome", Version: "143.0.7499.40"}
+}
 
 type factoryStub struct {
 	browser *browserStub
@@ -141,8 +144,12 @@ func TestServiceReturnsBrowserCloseError(t *testing.T) {
 	closeErr := errors.New("close failed")
 	b := &browserStub{closeErr: closeErr}
 	auth := service{factory: &factoryStub{browser: b}, paths: paths}
+	var events []DiagnosticEvent
+	ctx := WithDiagnosticSink(context.Background(), func(event DiagnosticEvent) {
+		events = append(events, event)
+	})
 
-	if _, err := auth.Status(context.Background()); !errors.Is(err, closeErr) {
+	if _, err := auth.Status(ctx); !errors.Is(err, closeErr) {
 		t.Fatalf("status close err=%v", err)
 	}
 	if b.closeCalls != 1 {
@@ -154,5 +161,33 @@ func TestServiceReturnsBrowserCloseError(t *testing.T) {
 	}
 	if err := lock.Release(); err != nil {
 		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Operation != "status" ||
+		events[0].Browser != "Chrome" || events[0].Version != "143.0.7499.40" ||
+		events[0].ErrorKind != ErrorInternal {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestServiceEmitsSafeOperationalDiagnostics(t *testing.T) {
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	auth := service{factory: &factoryStub{}, paths: paths}
+	var events []DiagnosticEvent
+	ctx := WithDiagnosticSink(context.Background(), func(event DiagnosticEvent) {
+		events = append(events, event)
+	})
+	if _, err := auth.Status(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Operation != "status" ||
+		events[0].Stage != "status.complete" ||
+		events[0].Browser != "Chrome" ||
+		events[0].Version != "143.0.7499.40" ||
+		events[0].ErrorKind != "" ||
+		events[0].RetryCount != 0 {
+		t.Fatalf("events=%+v", events)
 	}
 }

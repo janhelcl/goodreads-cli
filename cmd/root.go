@@ -55,9 +55,21 @@ func runContextWithMCP(
 	root := newRootWithMCP(out, errOut, factory, runMCP)
 	root.SetContext(ctx)
 	root.SetArgs(args)
+	started := time.Now()
 	if err := root.Execute(); err != nil {
 		if debug, _ := root.PersistentFlags().GetBool("debug"); debug {
-			fmt.Fprintf(errOut, "debug: exit_code=%d\n", exitCode(err))
+			stage := app.SafeErrorStage(err)
+			if stage == "" {
+				stage = "unknown"
+			}
+			fmt.Fprintf(
+				errOut,
+				"debug: stage=%s elapsed_ms=%d error_kind=%s retry_count=0 exit_code=%d\n",
+				stage,
+				time.Since(started).Milliseconds(),
+				app.DescribeError(err).Kind,
+				exitCode(err),
+			)
 		}
 		fmt.Fprintln(errOut, publicError(err))
 		return exitCode(err)
@@ -99,6 +111,35 @@ func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRun
 		}
 		if debug {
 			fmt.Fprintf(errOut, "debug: operation=%s\n", cmd.Name())
+			cmd.SetContext(app.WithDiagnosticSink(cmd.Context(), func(event app.DiagnosticEvent) {
+				browserProduct := event.Browser
+				if browserProduct == "" {
+					browserProduct = "unknown"
+				}
+				browserVersion := event.Version
+				if browserVersion == "" {
+					browserVersion = "unknown"
+				}
+				stage := event.Stage
+				if stage == "" {
+					stage = "unknown"
+				}
+				errorKind := event.ErrorKind
+				if errorKind == "" {
+					errorKind = "none"
+				}
+				fmt.Fprintf(
+					errOut,
+					"debug: operation=%s stage=%s elapsed_ms=%d browser_product=%s browser_version=%s error_kind=%s retry_count=%d\n",
+					event.Operation,
+					stage,
+					event.Elapsed.Milliseconds(),
+					browserProduct,
+					browserVersion,
+					errorKind,
+					event.RetryCount,
+				)
+			}))
 		}
 		_ = noColor // Human output currently has no color sequences.
 		return nil
@@ -524,11 +565,11 @@ func exitCode(err error) int {
 		return 7
 	case app.ErrorBookNotFound, app.ErrorBookAmbiguous:
 		return 4
-	case app.ErrorMutationAmbiguous, app.ErrorVerificationFailed:
+	case app.ErrorMutationAmbiguous, app.ErrorPartialMutation, app.ErrorVerificationFailed:
 		return 5
 	case app.ErrorNotAuthenticated, app.ErrorLoginCancelled, app.ErrorBrowserLaunch:
 		return 3
-	case app.ErrorTimeout, app.ErrorExportFailed:
+	case app.ErrorTimeout, app.ErrorNetwork, app.ErrorExportFailed, app.ErrorScanIncomplete:
 		return 6
 	default:
 		return 1

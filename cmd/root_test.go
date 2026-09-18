@@ -137,12 +137,21 @@ func TestBusyErrorIsSafeAndTyped(t *testing.T) {
 	}
 }
 
-func TestPageLimitUsesCompatibilityExitCode(t *testing.T) {
-	if code := exitCode(app.ErrPageLimit); code != 7 {
+func TestIncompleteScansUseRemoteFailureExitCode(t *testing.T) {
+	if code := exitCode(app.ErrPageLimit); code != 6 {
 		t.Fatalf("page limit exit code=%d", code)
 	}
-	if message := publicError(app.ErrPageLimit); !strings.Contains(message, "page limit") {
+	if message := publicError(app.ErrPageLimit); !strings.Contains(message, "safety budget") {
 		t.Fatalf("page limit message=%q", message)
+	}
+	if code := exitCode(app.ErrScanIncomplete); code != 6 {
+		t.Fatalf("scan incomplete exit code=%d", code)
+	}
+	if message := publicError(app.ErrScanIncomplete); !strings.Contains(message, "no mutation") {
+		t.Fatalf("scan incomplete message=%q", message)
+	}
+	if code := exitCode(app.ErrNetwork); code != 6 {
+		t.Fatalf("network exit code=%d", code)
 	}
 }
 
@@ -161,6 +170,37 @@ func TestMutationErrorsAreSafeAndTyped(t *testing.T) {
 		if code != 5 || out.Len() != 0 || !strings.Contains(errOut.String(), tc.want) ||
 			strings.Contains(errOut.String(), "review") {
 			t.Fatalf("err=%v code=%d stdout=%q stderr=%q", tc.err, code, out.String(), errOut.String())
+		}
+	}
+}
+
+func TestPartialMutationErrorUsesExitFiveAndSafeDetails(t *testing.T) {
+	rating := 3
+	date := "2026-09-18"
+	partial := &domain.PartialMutationError{
+		Operation: "finish",
+		Completed: []string{"status", "date"},
+		Failed:    "rating",
+		Observed: domain.ObservedMutationState{
+			Status:   domain.StatusRead,
+			Rating:   &rating,
+			DateRead: &date,
+		},
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"status"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{err: partial}, nil
+	})
+	message := errOut.String()
+	if code != 5 || out.Len() != 0 ||
+		!strings.Contains(message, "completed: status, date") ||
+		!strings.Contains(message, "failed: rating") ||
+		!strings.Contains(message, "do not retry automatically") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), message)
+	}
+	for _, forbidden := range []string{"9780306406157", "private review", "/review/", "#books"} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("partial error leaked %q: %q", forbidden, message)
 		}
 	}
 }
@@ -521,12 +561,37 @@ func TestMCPCommandWiresServiceAndGlobalOptions(t *testing.T) {
 }
 
 func TestDebugIsRedactedAndNoColorAccepted(t *testing.T) {
+	forbidden := []string{
+		"9780306406157",
+		"private title",
+		"private author",
+		"private review",
+		"#books",
+		"https://www.goodreads.com/review/list/123",
+		"<html>",
+		"session_cookie=secret",
+		"localStorage-secret",
+		"password-field-value",
+		"Book Id,Title",
+		"/home/private/profile",
+	}
 	var out, errOut bytes.Buffer
 	code := run([]string{"status", "--json", "--debug", "--no-color"}, &out, &errOut, func(bool) (app.Service, error) {
-		return authStub{err: app.ErrCompatibility}, nil
+		return authStub{err: fmt.Errorf("%w at mutation.rating: %s", app.ErrCompatibility, strings.Join(forbidden, " "))}, nil
 	})
-	if code != 7 || out.Len() != 0 || !strings.Contains(errOut.String(), "debug: operation=status") ||
-		!strings.Contains(errOut.String(), "debug: exit_code=7") || strings.Contains(errOut.String(), "review/list") {
+	diagnostics := errOut.String()
+	if code != 7 || out.Len() != 0 ||
+		!strings.Contains(diagnostics, "debug: operation=status") ||
+		!strings.Contains(diagnostics, "stage=mutation.rating") ||
+		!strings.Contains(diagnostics, "elapsed_ms=") ||
+		!strings.Contains(diagnostics, "error_kind=compatibility") ||
+		!strings.Contains(diagnostics, "retry_count=0") ||
+		!strings.Contains(diagnostics, "exit_code=7") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	for _, value := range forbidden {
+		if strings.Contains(diagnostics, value) {
+			t.Fatalf("debug output leaked %q: %q", value, diagnostics)
+		}
 	}
 }

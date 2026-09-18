@@ -107,7 +107,8 @@ func TestStatusRequiresPrivatePageAndMarkers(t *testing.T) {
 		{"authenticated", privatePage(), true, nil},
 		{"signed-out redirect", &fakePage{url: signInURL}, false, nil},
 		{"missing marker", &fakePage{url: privatePage().url, text: map[string]bool{"h1|^My Books$": true}}, false, ErrCompatibility},
-		{"service page", &fakePage{url: "https://www.goodreads.com/error"}, false, ErrCompatibility},
+		{"service path", &fakePage{url: "https://www.goodreads.com/error"}, false, browser.ErrNetwork},
+		{"service response", &fakePage{url: privatePage().url, html: "<title>503 Service Unavailable</title>"}, false, browser.ErrNetwork},
 		{"unexpected port", &fakePage{url: "https://www.goodreads.com:8443/review/list/123"}, false, ErrCompatibility},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

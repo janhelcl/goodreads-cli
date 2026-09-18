@@ -60,6 +60,22 @@ func TestExplicitBrowserValidation(t *testing.T) {
 	}
 }
 
+func TestRuntimeErrorClassification(t *testing.T) {
+	if got := numericVersion("Google Chrome 143.0.7499.40"); got != "143.0.7499.40" {
+		t.Fatalf("version=%q", got)
+	}
+	if err := classifyRuntimeError(errors.New("net::ERR_CONNECTION_RESET")); !errors.Is(err, ErrNetwork) {
+		t.Fatalf("network error=%v", err)
+	}
+	if err := classifyRuntimeError(context.DeadlineExceeded); !errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrNetwork) {
+		t.Fatalf("deadline was reclassified: %v", err)
+	}
+	if err := classifyRuntimeError(errors.New("element not found")); errors.Is(err, ErrNetwork) {
+		t.Fatalf("DOM error was reclassified: %v", err)
+	}
+}
+
 func TestBrowserProductPinnedToProfile(t *testing.T) {
 	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
 	if err := paths.EnsureBrowser(); err != nil {

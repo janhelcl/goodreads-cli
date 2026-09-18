@@ -16,14 +16,17 @@ var (
 	ErrBusy               = profile.ErrBusy
 	ErrBrowserUnavailable = browser.ErrUnavailable
 	ErrBrowserLaunch      = browser.ErrLaunch
+	ErrNetwork            = browser.ErrNetwork
 	ErrSessionExpired     = goodreads.ErrSessionExpired
 	ErrLoginCancelled     = goodreads.ErrLoginCancelled
 	ErrBookNotFound       = goodreads.ErrBookNotFound
 	ErrBookAmbiguous      = goodreads.ErrBookAmbiguous
 	ErrMutationAmbiguous  = goodreads.ErrMutationAmbiguous
+	ErrPartialMutation    = domain.ErrPartialMutation
 	ErrVerificationFailed = goodreads.ErrVerificationFailed
 	ErrCompatibility      = goodreads.ErrCompatibility
 	ErrPageLimit          = goodreads.ErrPageLimit
+	ErrScanIncomplete     = goodreads.ErrScanIncomplete
 	ErrExportFailed       = goodreads.ErrExportFailed
 )
 
@@ -35,13 +38,16 @@ const (
 	ErrorBusy               ErrorKind = "busy"
 	ErrorBrowserUnavailable ErrorKind = "browser_unavailable"
 	ErrorBrowserLaunch      ErrorKind = "browser_launch"
+	ErrorNetwork            ErrorKind = "network"
 	ErrorNotAuthenticated   ErrorKind = "not_authenticated"
 	ErrorLoginCancelled     ErrorKind = "login_cancelled"
 	ErrorBookNotFound       ErrorKind = "book_not_found"
 	ErrorBookAmbiguous      ErrorKind = "book_ambiguous"
 	ErrorMutationAmbiguous  ErrorKind = "mutation_ambiguous"
+	ErrorPartialMutation    ErrorKind = "partial_mutation"
 	ErrorVerificationFailed ErrorKind = "verification_failed"
 	ErrorCompatibility      ErrorKind = "compatibility"
+	ErrorScanIncomplete     ErrorKind = "scan_incomplete"
 	ErrorExportFailed       ErrorKind = "export_failed"
 	ErrorTimeout            ErrorKind = "timeout"
 	ErrorCancelled          ErrorKind = "cancelled"
@@ -77,16 +83,26 @@ func DescribeError(err error) ErrorDescriptor {
 		return ErrorDescriptor{ErrorBrowserUnavailable, "No supported Chrome, Chromium, or Edge browser found. Set GOODREADS_CLI_BROWSER to its executable."}
 	case errors.Is(err, ErrBrowserLaunch):
 		return ErrorDescriptor{ErrorBrowserLaunch, "Could not launch the dedicated browser."}
+	case errors.Is(err, ErrNetwork):
+		return ErrorDescriptor{ErrorNetwork, "Goodreads could not be reached; check the network and try again."}
 	case errors.Is(err, ErrCompatibility):
 		return ErrorDescriptor{ErrorCompatibility, "Goodreads UI changed; retry with --headed for diagnosis."}
 	case errors.Is(err, ErrPageLimit):
-		return ErrorDescriptor{ErrorCompatibility, "Library scan reached its page limit before the result could be confirmed."}
+		return ErrorDescriptor{ErrorScanIncomplete, "Library scan reached its safety budget before the requested results could be completed."}
+	case errors.Is(err, ErrScanIncomplete):
+		return ErrorDescriptor{ErrorScanIncomplete, "Exact-edition scan reached its safety budget before identity could be confirmed; no mutation was attempted."}
 	case errors.Is(err, ErrBookNotFound):
 		return ErrorDescriptor{ErrorBookNotFound, "No library entry has that exact ISBN."}
 	case errors.Is(err, ErrBookAmbiguous):
 		return ErrorDescriptor{ErrorBookAmbiguous, "Multiple library entries have that ISBN; exact edition is ambiguous."}
 	case errors.Is(err, ErrMutationAmbiguous):
 		return ErrorDescriptor{ErrorMutationAmbiguous, "Goodreads may have changed the book, but the result could not be confirmed; do not retry automatically."}
+	case errors.Is(err, ErrPartialMutation):
+		var partial *domain.PartialMutationError
+		if errors.As(err, &partial) {
+			return ErrorDescriptor{ErrorPartialMutation, partial.Error()}
+		}
+		return ErrorDescriptor{ErrorPartialMutation, "Goodreads mutation partially completed; do not retry automatically."}
 	case errors.Is(err, ErrVerificationFailed):
 		return ErrorDescriptor{ErrorVerificationFailed, "Goodreads did not match the requested change after readback."}
 	case errors.Is(err, ErrSessionExpired):

@@ -12,10 +12,14 @@ import (
 )
 
 var ErrPageLimit = errors.New("library page scan limit reached")
+var ErrScanIncomplete = errors.New("exact-edition scan incomplete")
 var ErrBookNotFound = errors.New("book ISBN not found in library")
 var ErrBookAmbiguous = errors.New("book ISBN matches multiple library entries")
 
-const maxShelfPages = 10
+const (
+	maxListShelfPages  = 10
+	maxExactShelfPages = 100
+)
 
 // Library reads rendered Goodreads shelf pages for this invocation only.
 func Library(ctx context.Context, b browser.Browser, filter domain.LibraryFilter) ([]domain.Book, error) {
@@ -23,7 +27,7 @@ func Library(ctx context.Context, b browser.Browser, filter domain.LibraryFilter
 		return nil, err
 	}
 	books := make([]domain.Book, 0, filter.Limit)
-	err := scanShelf(ctx, b, filter.Shelf, func(book domain.Book) bool {
+	err := scanShelf(ctx, b, filter.Shelf, maxListShelfPages, ErrPageLimit, func(book domain.Book) bool {
 		if filter.Rating == 0 || book.Rating == filter.Rating {
 			books = append(books, book)
 		}
@@ -38,32 +42,18 @@ func Library(ctx context.Context, b browser.Browser, filter domain.LibraryFilter
 // Get resolves one exact edition ISBN from the user's rendered library rows.
 // The full bounded scan is required to detect duplicate matches.
 func Get(ctx context.Context, b browser.Browser, isbn domain.ISBN) (domain.Book, error) {
-	var found domain.Book
-	matches := 0
-	unidentified := false
-	err := scanShelf(ctx, b, "", func(book domain.Book) bool {
-		if book.ISBN10 == "" && book.ISBN13 == "" {
-			unidentified = true
-		}
-		if exactISBN(book, isbn) {
-			found = book
-			matches++
-		}
-		return false
-	})
+	state, err := Status(ctx, b)
 	if err != nil {
 		return domain.Book{}, err
 	}
-	if matches > 1 {
-		return domain.Book{}, ErrBookAmbiguous
+	if !state.Connected {
+		return domain.Book{}, ErrSessionExpired
 	}
-	if unidentified {
-		return domain.Book{}, fmt.Errorf("%w at library.row: ISBN missing; exact lookup incomplete", ErrCompatibility)
+	candidate, err := resolveOwnedEdition(ctx, b, isbn, "", false, true)
+	if err != nil {
+		return domain.Book{}, err
 	}
-	if matches == 0 {
-		return domain.Book{}, ErrBookNotFound
-	}
-	return found, nil
+	return candidate.Book, nil
 }
 
 func exactISBN(book domain.Book, isbn domain.ISBN) bool {
@@ -78,7 +68,14 @@ func exactISBN(book domain.Book, isbn domain.ISBN) bool {
 	return false
 }
 
-func scanShelf(ctx context.Context, b browser.Browser, shelf domain.ReadingStatus, visit func(domain.Book) bool) error {
+func scanShelf(
+	ctx context.Context,
+	b browser.Browser,
+	shelf domain.ReadingStatus,
+	maxPages int,
+	incompleteError error,
+	visit func(domain.Book) bool,
+) error {
 	state, err := Status(ctx, b)
 	if err != nil {
 		return err
@@ -93,7 +90,7 @@ func scanShelf(ctx context.Context, b browser.Browser, shelf domain.ReadingStatu
 		target.RawQuery = query.Encode()
 	}
 	visited := map[string]bool{}
-	for pageNumber := 0; pageNumber < maxShelfPages; pageNumber++ {
+	for pageNumber := 0; pageNumber < maxPages; pageNumber++ {
 		if visited[target.String()] {
 			return fmt.Errorf("%w at library.page: pagination loop", ErrCompatibility)
 		}
@@ -140,9 +137,18 @@ func scanShelf(ctx context.Context, b browser.Browser, shelf domain.ReadingStatu
 		}
 		target = currentURL.ResolveReference(next)
 		if !isGoodreadsPage(target.String()) || target.Path != currentURL.Path ||
-			target.Query().Get("shelf") != string(shelf) {
+			target.Query().Get("shelf") != string(shelf) ||
+			!samePaginationScope(currentURL, target) {
 			return fmt.Errorf("%w at library.page: next link left shelf", ErrCompatibility)
 		}
 	}
-	return ErrPageLimit
+	return incompleteError
+}
+
+func samePaginationScope(current, next *url.URL) bool {
+	currentQuery := current.Query()
+	nextQuery := next.Query()
+	currentQuery.Del("page")
+	nextQuery.Del("page")
+	return currentQuery.Encode() == nextQuery.Encode()
 }

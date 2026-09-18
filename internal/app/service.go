@@ -7,6 +7,7 @@ import (
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
+	"github.com/janhelcl/goodreads-cli/internal/goodreads"
 	"github.com/janhelcl/goodreads-cli/internal/profile"
 )
 
@@ -73,11 +74,14 @@ const (
 
 func (s *service) withBrowser(
 	ctx context.Context,
+	operation string,
 	policy profilePolicy,
 	options browser.LaunchOptions,
 	use func(browser.Browser) error,
 ) error {
-	return s.withProfileLock(ctx, func() (err error) {
+	started := time.Now()
+	var runtimeInfo browser.RuntimeInfo
+	err := s.withProfileLock(ctx, func() (err error) {
 		switch policy {
 		case createProfile:
 			if err := s.paths.EnsureBrowser(); err != nil {
@@ -102,11 +106,29 @@ func (s *service) withBrowser(
 		if err != nil {
 			return err
 		}
+		if provider, ok := b.(browser.RuntimeInfoProvider); ok {
+			runtimeInfo = provider.RuntimeInfo()
+		}
 		defer func() {
 			err = errors.Join(err, b.Close())
 		}()
 		return use(b)
 	})
+	event := DiagnosticEvent{
+		Operation:  operation,
+		Elapsed:    time.Since(started),
+		Browser:    runtimeInfo.Product,
+		Version:    runtimeInfo.Version,
+		RetryCount: 0,
+	}
+	if err != nil {
+		event.Stage = goodreads.SafeErrorStage(err)
+		event.ErrorKind = DescribeError(err).Kind
+	} else {
+		event.Stage = operation + ".complete"
+	}
+	emitDiagnostic(ctx, event)
+	return err
 }
 
 func (s *service) withProfileLock(ctx context.Context, use func() error) (err error) {
