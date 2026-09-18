@@ -40,7 +40,8 @@ func Library(ctx context.Context, b browser.Browser, filter domain.LibraryFilter
 }
 
 // Get resolves one exact edition ISBN from the user's rendered library rows.
-// The full bounded scan is required to detect duplicate matches.
+// The full bounded scan is required to detect duplicate matches. An unidentified
+// sibling row does not hide a unique ISBN match with a different book ID.
 func Get(ctx context.Context, b browser.Browser, isbn domain.ISBN) (domain.Book, error) {
 	state, err := Status(ctx, b)
 	if err != nil {

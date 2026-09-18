@@ -133,6 +133,11 @@ func findMutationCandidate(
 // resolveOwnedEdition is the single exact owner-library resolver used by Get
 // and every mutation. An empty stage requests identity only; mutation callers
 // additionally validate the controls they need on the matched row.
+//
+// Owner-library ISBN search does not prove a row. A unique owner ISBN match is
+// conclusive when no other row shares that book ID. If no ISBN match remains
+// after termination and an unidentified row is present, Get locates the edition
+// by a visible public ISBN book ID.
 func resolveOwnedEdition(
 	ctx context.Context,
 	b browser.Browser,
@@ -141,46 +146,96 @@ func resolveOwnedEdition(
 	requireShelfChooser bool,
 	rejectUnidentifiedMatch bool,
 ) (ratingCandidate, error) {
+	found, matches, idCounts, unidentified, err := scanOwnedCandidates(
+		ctx, b, isbn, "", stage, requireShelfChooser,
+	)
+	if err != nil {
+		return ratingCandidate{}, err
+	}
+	switch {
+	case matches > 1:
+		return ratingCandidate{}, ErrBookAmbiguous
+	case matches == 1:
+		if found.Book.BookID != "" && idCounts[found.Book.BookID] > 1 {
+			return ratingCandidate{}, ErrBookAmbiguous
+		}
+		return found, nil
+	case !unidentified || !rejectUnidentifiedMatch:
+		return ratingCandidate{}, ErrBookNotFound
+	}
+	bookID, err := lookupPublicBookID(ctx, b, isbn)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ratingCandidate{}, err
+		}
+		if errors.Is(err, browser.ErrNetwork) {
+			return ratingCandidate{}, err
+		}
+		return ratingCandidate{}, fmt.Errorf("%w at library.row: ISBN missing; exact lookup incomplete", ErrCompatibility)
+	}
+	found, matches, _, _, err = scanOwnedCandidates(ctx, b, isbn, bookID, stage, requireShelfChooser)
+	if err != nil {
+		return ratingCandidate{}, err
+	}
+	switch {
+	case matches > 1:
+		return ratingCandidate{}, ErrBookAmbiguous
+	case matches == 1:
+		return found, nil
+	default:
+		return ratingCandidate{}, ErrBookNotFound
+	}
+}
+
+func scanOwnedCandidates(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	bookID string,
+	stage string,
+	requireShelfChooser bool,
+) (ratingCandidate, int, map[string]int, bool, error) {
 	target, _ := url.Parse(libraryURL)
 	visited := map[string]bool{}
 	var found ratingCandidate
 	matches := 0
 	unidentified := false
+	idCounts := map[string]int{}
 	for pageNumber := 0; pageNumber < maxExactShelfPages; pageNumber++ {
 		if err := ctx.Err(); err != nil {
-			return ratingCandidate{}, err
+			return ratingCandidate{}, 0, nil, false, err
 		}
 		if visited[target.String()] {
-			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: pagination loop", ErrCompatibility)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("%w at book.resolve: pagination loop", ErrCompatibility)
 		}
 		visited[target.String()] = true
 		page, err := b.NewPage(ctx, target.String())
 		if err != nil {
-			return ratingCandidate{}, fmt.Errorf("book.resolve: navigation failed: %w", err)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("book.resolve: navigation failed: %w", err)
 		}
 		current, err := page.URL(ctx)
 		if err != nil {
 			_ = page.Close()
-			return ratingCandidate{}, fmt.Errorf("book.resolve: URL unavailable: %w", err)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("book.resolve: URL unavailable: %w", err)
 		}
 		currentURL, err := url.Parse(current)
 		if err != nil || !isGoodreadsPage(current) ||
 			(currentURL.Path != "/review/list" && !strings.HasPrefix(currentURL.Path, "/review/list/")) {
 			_ = page.Close()
-			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: unexpected page", ErrCompatibility)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("%w at book.resolve: unexpected page", ErrCompatibility)
 		}
 		raw, err := page.HTML(ctx)
 		_ = page.Close()
 		if err != nil {
-			return ratingCandidate{}, fmt.Errorf("book.resolve: DOM unavailable: %w", err)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("book.resolve: DOM unavailable: %w", err)
 		}
 		parsed, err := parseShelfPage(raw)
 		if err != nil {
-			return ratingCandidate{}, err
+			return ratingCandidate{}, 0, nil, false, err
 		}
 		doc, err := goquery.NewDocumentFromReader(strings.NewReader(raw))
 		if err != nil {
-			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: invalid DOM", ErrCompatibility)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("%w at book.resolve: invalid DOM", ErrCompatibility)
 		}
 		var rowErr error
 		doc.Find("#booksBody > tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
@@ -189,10 +244,23 @@ func resolveOwnedEdition(
 				rowErr = err
 				return false
 			}
+			if book.BookID != "" {
+				idCounts[book.BookID]++
+			}
 			if book.ISBN10 == "" && book.ISBN13 == "" {
 				unidentified = true
 			}
-			if !exactISBN(book, isbn) {
+			matched := exactISBN(book, isbn)
+			if bookID != "" {
+				if book.BookID != bookID {
+					return true
+				}
+				if (book.ISBN10 != "" || book.ISBN13 != "") && !exactISBN(book, isbn) {
+					rowErr = fmt.Errorf("%w at book.resolve: owner row identity conflicted", ErrCompatibility)
+					return false
+				}
+				matched = true
+			} else if !matched {
 				return true
 			}
 			candidate := ratingCandidate{Book: book}
@@ -208,34 +276,22 @@ func resolveOwnedEdition(
 			return true
 		})
 		if rowErr != nil {
-			return ratingCandidate{}, rowErr
+			return ratingCandidate{}, 0, nil, false, rowErr
 		}
 		if parsed.Next == "" {
-			switch {
-			case matches > 1:
-				return ratingCandidate{}, ErrBookAmbiguous
-			case matches == 0:
-				if unidentified && rejectUnidentifiedMatch {
-					return ratingCandidate{}, fmt.Errorf("%w at library.row: ISBN missing; exact lookup incomplete", ErrCompatibility)
-				}
-				return ratingCandidate{}, ErrBookNotFound
-			case unidentified && rejectUnidentifiedMatch:
-				return ratingCandidate{}, fmt.Errorf("%w at library.row: ISBN missing; exact lookup incomplete", ErrCompatibility)
-			default:
-				return found, nil
-			}
+			return found, matches, idCounts, unidentified, nil
 		}
 		next, err := url.Parse(parsed.Next)
 		if err != nil {
-			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: invalid next link", ErrCompatibility)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("%w at book.resolve: invalid next link", ErrCompatibility)
 		}
 		target = currentURL.ResolveReference(next)
 		if !isGoodreadsPage(target.String()) || target.Path != currentURL.Path ||
 			!samePaginationScope(currentURL, target) {
-			return ratingCandidate{}, fmt.Errorf("%w at book.resolve: next link left shelf", ErrCompatibility)
+			return ratingCandidate{}, 0, nil, false, fmt.Errorf("%w at book.resolve: next link left shelf", ErrCompatibility)
 		}
 	}
-	return ratingCandidate{}, ErrScanIncomplete
+	return ratingCandidate{}, 0, nil, false, ErrScanIncomplete
 }
 
 func candidateFromRow(

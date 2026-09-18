@@ -154,6 +154,9 @@ func resolveExactBook(
 	if err != nil {
 		return resolvedBook{}, nil, fmt.Errorf("book.resolve: search unavailable: %w", err)
 	}
+	if searchPage == nil {
+		return resolvedBook{}, nil, fmt.Errorf("%w at book.resolve: search results unavailable", ErrCompatibility)
+	}
 	searchDoc, err := waitForDocument(ctx, searchPage, func(doc *goquery.Document) bool {
 		return doc.Find("form[action='/search']").Length() == 1 &&
 			doc.Find("a[href*='/book/show/']").Length() > 0
@@ -284,6 +287,20 @@ func textHasExactISBN(text string, isbn domain.ISBN) bool {
 
 func normalizedVisibleText(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(value), " "))
+}
+
+func lookupPublicBookID(ctx context.Context, b browser.Browser, isbn domain.ISBN) (string, error) {
+	resolved, page, err := resolveExactBook(ctx, b, isbn)
+	if page != nil {
+		_ = page.Close()
+	}
+	if err != nil {
+		return "", err
+	}
+	if resolved.BookID == "" {
+		return "", ErrBookNotFound
+	}
+	return resolved.BookID, nil
 }
 
 func libraryContainsBookID(ctx context.Context, b browser.Browser, bookID string) (bool, error) {

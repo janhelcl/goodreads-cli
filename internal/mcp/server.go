@@ -225,7 +225,7 @@ func (a *adapter) getBook(
 	if err != nil {
 		return nil, domain.Book{}, err
 	}
-	return withServiceCall(ctx, a, time.Minute, func(ctx context.Context) (domain.Book, error) {
+	return withServiceCall(ctx, a, 2*time.Minute, func(ctx context.Context) (domain.Book, error) {
 		return a.service.Get(ctx, isbn)
 	})
 }

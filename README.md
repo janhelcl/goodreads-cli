@@ -55,12 +55,14 @@ manifest. Pull requests and `main` run formatting, vet, tests, race detection,
 vulnerability scanning, six target builds, and local-only Chrome integration
 flows before release packaging repeats those gates.
 Authentication, populated/filtered shelf reads, and reversible live canaries
-for add, status, rating, finish date, and review passed. Exact lookup remains
-fail-closed when any scanned row omits its ISBN. Exact-edition operations use a
-separate 100-page safety budget; exhausting it returns `scan_incomplete` and
-guarantees that no mutation was attempted. Compound `add` and `finish`
-operations report verified completed steps and one reconciled safe final state
-when a later step fails, and never roll back or replay automatically. The
+for add, status, rating, finish date, and review passed. Exact lookup treats a
+unique owner ISBN match as conclusive when no other row shares that book ID,
+and otherwise locates the edition by a visible public ISBN book ID.
+Exact-edition operations use a separate 100-page safety budget; exhausting it
+returns `scan_incomplete` and guarantees that no mutation was attempted.
+Compound `add` and `finish` operations report verified completed steps and one
+reconciled safe final state when a later step fails, and never roll back or
+replay automatically. The
 [compatibility matrix](specs/compatibility-matrix.md) records the tested scope
 and remaining gates.
 

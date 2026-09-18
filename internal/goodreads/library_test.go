@@ -159,7 +159,7 @@ func TestBookIDResolutionUsesExactScanBudget(t *testing.T) {
 	}
 }
 
-func TestUnidentifiedRowsBlockGetButNotProvenMutationTarget(t *testing.T) {
+func TestGetResolvesUniqueISBNDespiteUnidentifiedSibling(t *testing.T) {
 	isbn, _ := domain.NormalizeISBN("9780306406157")
 	const pageTwoURL = "https://www.goodreads.com/review/list/123?page=2"
 	unknown := exactScanFixture(1, false, 2)
@@ -178,8 +178,9 @@ func TestUnidentifiedRowsBlockGetButNotProvenMutationTarget(t *testing.T) {
 			},
 		},
 	}
-	if _, err := Get(context.Background(), getBrowser, isbn); !errors.Is(err, ErrCompatibility) {
-		t.Fatalf("get accepted incomplete uniqueness proof: %v", err)
+	book, err := Get(context.Background(), getBrowser, isbn)
+	if err != nil || book.BookID != "42" {
+		t.Fatalf("get book=%+v err=%v", book, err)
 	}
 
 	mutationBrowser := &fakeBrowser{pages: map[string]browser.Page{
@@ -191,6 +192,51 @@ func TestUnidentifiedRowsBlockGetButNotProvenMutationTarget(t *testing.T) {
 	)
 	if err != nil || candidate.Book.BookID != "42" {
 		t.Fatalf("proven mutation target=%+v err=%v", candidate, err)
+	}
+}
+
+func TestGetUsesPublicBookIDWhenOwnerISBNIsMissing(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	unknown := ownerStatusFixture(domain.StatusRead, false)
+	unknown = strings.Replace(unknown, "0-306-40615-2", "", 1)
+	unknown = strings.Replace(unknown, "9780306406157", "", 1)
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	bookURL := "https://www.goodreads.com/book/show/42.Invented_Book"
+	shelf := libraryTestPage(unknown, "https://www.goodreads.com/review/list/123")
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{
+			searchURL: &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")},
+			bookURL:   &fakePage{url: bookURL, html: addBookFixture(true)},
+		},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {privatePage(), shelf, shelf},
+		},
+	}
+	book, err := Get(context.Background(), b, isbn)
+	if err != nil || book.BookID != "42" {
+		t.Fatalf("get book=%+v err=%v calls=%v", book, err, b.calls)
+	}
+}
+
+func TestGetReportsAbsentWhenPublicBookIDIsMissingFromLibrary(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	unknown := exactScanFixture(1, false, 0)
+	unknown = strings.Replace(unknown, "1-60358-055-7", "", 1)
+	unknown = strings.Replace(unknown, "9781603580557", "", 1)
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	bookURL := "https://www.goodreads.com/book/show/42.Invented_Book"
+	shelf := libraryTestPage(unknown, "https://www.goodreads.com/review/list/123")
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{
+			searchURL: &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")},
+			bookURL:   &fakePage{url: bookURL, html: addBookFixture(true)},
+		},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {privatePage(), shelf, shelf},
+		},
+	}
+	if _, err := Get(context.Background(), b, isbn); !errors.Is(err, ErrBookNotFound) {
+		t.Fatalf("expected not found, got %v calls=%v", err, b.calls)
 	}
 }
 
