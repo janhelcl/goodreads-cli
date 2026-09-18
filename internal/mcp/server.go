@@ -9,14 +9,12 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/janhelcl/goodreads-cli/internal/app"
+	"github.com/janhelcl/goodreads-cli/internal/buildinfo"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
 	"github.com/janhelcl/goodreads-cli/internal/output"
 )
 
-const (
-	serverName    = "goodreads-cli"
-	serverVersion = "0.1.0"
-)
+const serverName = "goodreads-cli"
 
 type Options struct {
 	Timeout time.Duration
@@ -89,7 +87,7 @@ func NewServer(service app.Service, options Options) *sdk.Server {
 	}
 	a.serial <- struct{}{}
 
-	server := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: serverVersion}, nil)
+	server := sdk.NewServer(&sdk.Implementation{Name: serverName, Version: buildinfo.Version}, nil)
 	server.AddReceivingMiddleware(normalizeToolErrors)
 	registerTools(server, a)
 	return server

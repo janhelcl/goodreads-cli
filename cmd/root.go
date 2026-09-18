@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/janhelcl/goodreads-cli/internal/app"
+	"github.com/janhelcl/goodreads-cli/internal/buildinfo"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
 	internalmcp "github.com/janhelcl/goodreads-cli/internal/mcp"
 	"github.com/janhelcl/goodreads-cli/internal/output"
@@ -77,9 +78,11 @@ func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRun
 	root := &cobra.Command{
 		Use:           "gr",
 		Short:         "Work with your Goodreads library",
+		Version:       buildinfo.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.SetVersionTemplate("gr {{.Version}}\n")
 	root.SetOut(out)
 	root.SetErr(errOut)
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {

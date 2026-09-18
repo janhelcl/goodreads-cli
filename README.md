@@ -19,6 +19,25 @@ CSV export remains an explicit user-facing escape hatch. CSV import/export is no
 
 The implementation contract lives in [`specs/`](specs/README.md). Start there before changing product behavior.
 
+## Install
+
+Release archives are published for 64-bit Intel/AMD and ARM Linux, macOS, and
+Windows on the [GitHub Releases](https://github.com/janhelcl/goodreads-cli/releases)
+page. Linux and macOS use `.tar.gz`; Windows uses `.zip`. Download the matching
+archive and `checksums.txt`, verify its SHA-256 checksum, then place `gr`
+(`gr.exe` on Windows) on your `PATH`.
+
+The CLI requires an installed Google Chrome, Chromium, or Microsoft Edge.
+Automatic browser downloads are intentionally disabled until their first-run
+and compatibility behavior has been validated. If discovery fails, set
+`GOODREADS_CLI_BROWSER` to the browser executable's absolute path.
+
+Run `gr --version` to verify the installation, then `gr login` to sign in in
+the dedicated browser window. Packaged binaries are cross-compiled for all six
+OS/architecture combinations; the current live runtime evidence is limited to
+Linux x86-64 with Chrome, as recorded in the
+[compatibility matrix](specs/compatibility-matrix.md).
+
 ## Implementation status
 
 The dedicated browser profile, OS lock, and Rod launcher are implemented. On a
@@ -31,6 +50,8 @@ download, and either writes it to stdout or atomically installs `--out`.
 `gr mcp` runs a local stdio MCP server exposing the same live reads and
 verified mutations through semantic tools; login remains a separate
 interactive CLI command.
+Version tags produce cross-platform release archives and a SHA-256 checksum
+manifest.
 Authentication, populated/filtered shelf reads, and reversible live canaries
 for add, status, rating, finish date, and review passed. Exact lookup remains
 fail-closed when any scanned row omits its ISBN. The
@@ -57,5 +78,5 @@ server exposes `get_library`, `get_book`, `add_book`, `start_reading`,
 returns safe typed errors when authentication or compatibility fails.
 
 For now, use an installed Chrome, Chromium, or Edge. `GOODREADS_CLI_BROWSER`
-may point to a supported executable for development; Rod-managed browser
-downloads remain disabled pending the first-run compatibility experiment.
+may point to a supported executable; Rod-managed browser downloads remain
+disabled pending the first-run compatibility experiment.

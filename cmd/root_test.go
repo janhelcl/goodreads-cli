@@ -70,6 +70,18 @@ func (a authStub) Export(_ context.Context, destination string, force bool) (dom
 	return a.export, a.err
 }
 
+func TestVersionDoesNotStartService(t *testing.T) {
+	var out, errOut bytes.Buffer
+	called := false
+	code := run([]string{"--version"}, &out, &errOut, func(bool) (app.Service, error) {
+		called = true
+		return authStub{}, nil
+	})
+	if code != 0 || called || out.String() != "gr dev\n" || errOut.Len() != 0 {
+		t.Fatalf("code=%d called=%t stdout=%q stderr=%q", code, called, out.String(), errOut.String())
+	}
+}
+
 func TestAuthJSONContracts(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
