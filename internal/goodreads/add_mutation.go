@@ -148,6 +148,15 @@ func resolveExactBook(
 	b browser.Browser,
 	isbn domain.ISBN,
 ) (resolvedBook, browser.Page, error) {
+	return resolvePublicBook(ctx, b, isbn, true)
+}
+
+func resolvePublicBook(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	requireAddControl bool,
+) (resolvedBook, browser.Page, error) {
 	searchTarget := "https://www.goodreads.com/search?q=" +
 		url.QueryEscape(isbn.ISBN13) + "&search_type=books"
 	searchPage, err := b.NewPage(ctx, searchTarget)
@@ -163,7 +172,7 @@ func resolveExactBook(
 	})
 	if err != nil {
 		_ = searchPage.Close()
-		return resolvedBook{}, nil, fmt.Errorf("%w at book.resolve: search results unavailable", ErrCompatibility)
+		return resolvedBook{}, nil, err
 	}
 	searchURL, err := searchPage.URL(ctx)
 	if err != nil {
@@ -213,12 +222,20 @@ func resolveExactBook(
 		return resolvedBook{}, nil, fmt.Errorf("book.resolve: book page unavailable: %w", err)
 	}
 	doc, err := waitForDocument(ctx, page, func(doc *goquery.Document) bool {
-		return doc.Find("div.Sticky div.BookActions button.Button--wtr.Button--block").Length() == 1 &&
-			doc.Find("div.BookPageMetadataSection button.Button--inline").Length() == 1
+		if doc.Find("div.BookPageMetadataSection button.Button--inline").Length() != 1 {
+			return false
+		}
+		// Already-owned book pages replace Want to Read with a shelf-status
+		// control. Identity proof only needs the metadata section.
+		if requireAddControl &&
+			doc.Find("div.Sticky div.BookActions button.Button--wtr.Button--block").Length() != 1 {
+			return false
+		}
+		return true
 	})
 	if err != nil {
 		_ = page.Close()
-		return resolvedBook{}, nil, fmt.Errorf("%w at book.resolve: book page did not hydrate", ErrCompatibility)
+		return resolvedBook{}, nil, err
 	}
 	metadata := doc.Find("div.BookPageMetadataSection").Clone()
 	metadata.Find("script,style").Remove()
@@ -243,6 +260,9 @@ func resolveExactBook(
 	cancelDetails()
 	if err != nil {
 		_ = page.Close()
+		if ctx.Err() != nil {
+			return resolvedBook{}, nil, ctx.Err()
+		}
 		return resolvedBook{}, nil, fmt.Errorf("%w at book.resolve: exact ISBN was not visible", ErrCompatibility)
 	}
 	return resolved, page, nil
@@ -290,7 +310,7 @@ func normalizedVisibleText(value string) string {
 }
 
 func lookupPublicBookID(ctx context.Context, b browser.Browser, isbn domain.ISBN) (string, error) {
-	resolved, page, err := resolveExactBook(ctx, b, isbn)
+	resolved, page, err := resolvePublicBook(ctx, b, isbn, false)
 	if page != nil {
 		_ = page.Close()
 	}

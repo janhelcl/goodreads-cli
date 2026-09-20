@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
@@ -256,15 +257,20 @@ func TestGetUsesPublicBookIDWhenOwnerISBNIsMissing(t *testing.T) {
 	b := &fakeBrowser{
 		pages: map[string]browser.Page{
 			searchURL: &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")},
-			bookURL:   &fakePage{url: bookURL, html: addBookFixture(true)},
+			bookURL:   &fakePage{url: bookURL, html: ownedBookFixture(true)},
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), shelf, shelf},
+			libraryURL: {privatePage(), shelf},
 		},
 	}
 	book, err := Get(context.Background(), b, isbn)
 	if err != nil || book.BookID != "42" {
 		t.Fatalf("get book=%+v err=%v calls=%v", book, err, b.calls)
+	}
+	for _, call := range b.calls[2:] {
+		if !strings.Contains(call, "/search") && !strings.Contains(call, "/book/show/") {
+			t.Fatalf("public ISBN match rescanned the library: %v", b.calls)
+		}
 	}
 }
 
@@ -279,14 +285,37 @@ func TestGetReportsAbsentWhenPublicBookIDIsMissingFromLibrary(t *testing.T) {
 	b := &fakeBrowser{
 		pages: map[string]browser.Page{
 			searchURL: &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")},
-			bookURL:   &fakePage{url: bookURL, html: addBookFixture(true)},
+			bookURL:   &fakePage{url: bookURL, html: ownedBookFixture(true)},
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), shelf, shelf},
+			libraryURL: {privatePage(), shelf},
 		},
 	}
 	if _, err := Get(context.Background(), b, isbn); !errors.Is(err, ErrBookNotFound) {
 		t.Fatalf("expected not found, got %v calls=%v", err, b.calls)
+	}
+}
+
+func TestGetPreservesPublicLookupTimeout(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	unknown := ownerStatusFixture(domain.StatusRead, false)
+	unknown = strings.Replace(unknown, "0-306-40615-2", "", 1)
+	unknown = strings.Replace(unknown, "9780306406157", "", 1)
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	shelf := libraryTestPage(unknown, "https://www.goodreads.com/review/list/123")
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{
+			searchURL: &fakePage{url: searchURL, html: `<html><body><form action="/search"></form></body></html>`},
+		},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {privatePage(), shelf},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, err := Get(ctx, b, isbn)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCompatibility) {
+		t.Fatalf("public lookup timeout remapped: %v calls=%v", err, b.calls)
 	}
 }
 

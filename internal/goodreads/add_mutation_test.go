@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
@@ -75,6 +76,58 @@ func TestResolveExactBookRejectsAmbiguousSearch(t *testing.T) {
 	b := &fakeBrowser{pages: map[string]browser.Page{searchURL: search}}
 	if _, _, err := resolveExactBook(context.Background(), b, isbn); !errors.Is(err, ErrBookAmbiguous) {
 		t.Fatalf("err=%v calls=%v", err, b.calls)
+	}
+}
+
+func TestResolveExactBookRequiresWantToRead(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	bookURL := "https://www.goodreads.com/book/show/42.Invented_Book"
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		searchURL: &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")},
+		bookURL:   &fakePage{url: bookURL, html: ownedBookFixture(true)},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	if _, _, err := resolveExactBook(ctx, b, isbn); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("add path accepted a book page without Want to Read: %v", err)
+	}
+}
+
+func TestLookupPublicBookIDAcceptsOwnedBookPage(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	bookURL := "https://www.goodreads.com/book/show/42.Invented_Book"
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		searchURL: &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")},
+		bookURL:   &fakePage{url: bookURL, html: ownedBookFixture(true)},
+	}}
+	bookID, err := lookupPublicBookID(context.Background(), b, isbn)
+	if err != nil || bookID != "42" {
+		t.Fatalf("bookID=%q err=%v calls=%v", bookID, err, b.calls)
+	}
+}
+
+func TestResolvePublicBookPreservesSearchTimeout(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		searchURL: &fakePage{url: searchURL, html: `<html><body><form action="/search"></form></body></html>`},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, _, err = resolvePublicBook(ctx, b, isbn, false)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCompatibility) {
+		t.Fatalf("search timeout remapped: %v", err)
 	}
 }
 
@@ -301,14 +354,24 @@ func addSearchFixture(route string) string {
 }
 
 func addBookFixture(details bool) string {
+	return bookPageFixture(details, true)
+}
+
+func ownedBookFixture(details bool) string {
+	return bookPageFixture(details, false)
+}
+
+func bookPageFixture(details, wantToRead bool) string {
 	metadata := ""
 	if details {
 		metadata = `<div class="TruncatedContent__text TruncatedContent__text--small">9780306406157 <span>(ISBN10: 0306406152)</span></div>`
 	}
+	action := `<button class="Button Button--medium Button--block">Read</button>`
+	if wantToRead {
+		action = `<button class="Button Button--wtr Button--block">Want to Read</button>`
+	}
 	return `<html><body>
-	<div class="Sticky"><div class="BookActions"><div class="BookActions__button">
-	<button class="Button Button--wtr Button--block">Want to Read</button>
-	</div></div></div>
+	<div class="Sticky"><div class="BookActions"><div class="BookActions__button">` + action + `</div></div></div>
 	<div class="BookPageMetadataSection"><button class="Button Button--inline">Book details</button>` +
 		metadata + `</div></body></html>`
 }
