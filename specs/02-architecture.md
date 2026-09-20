@@ -166,7 +166,9 @@ The launcher is responsible for:
 - keeping debugging endpoints local to the process;
 - propagating cancellation and closing browser processes;
 - configuring a private temporary download directory unless the user requested a destination;
-- producing typed launch and browser-unavailable errors.
+- producing typed launch and browser-unavailable errors;
+- keeping an operation timeout or cancellation during discovery or launch as
+  timeout or cancellation, not browser-unavailable or launch-failure.
 
 ## Dedicated browser profile
 

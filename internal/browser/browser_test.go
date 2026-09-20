@@ -61,6 +61,63 @@ func TestExplicitBrowserValidation(t *testing.T) {
 	}
 }
 
+func TestResolveExecutableTimeoutIsNotUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	t.Setenv("GOODREADS_CLI_BROWSER", "")
+	dir := t.TempDir()
+	hanging := filepath.Join(dir, "google-chrome")
+	if err := os.WriteFile(hanging, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if _, err := ResolveExecutable(ctx, hanging); !errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrUnavailable) {
+		t.Fatalf("explicit discovery timeout remapped: %v", err)
+	}
+
+	t.Setenv("PATH", dir)
+	ctx, cancel = context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if _, err := ResolveExecutable(ctx, ""); !errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrUnavailable) {
+		t.Fatalf("PATH discovery timeout remapped: %v", err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if _, err := ResolveExecutable(ctx, hanging); !errors.Is(err, context.Canceled) ||
+		errors.Is(err, ErrUnavailable) {
+		t.Fatalf("cancelled discovery remapped: %v", err)
+	}
+}
+
+func TestResolveExecutableMissingBrowserIsUnavailable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("absolute browser fallbacks exist on other platforms")
+	}
+	t.Setenv("GOODREADS_CLI_BROWSER", "")
+	t.Setenv("PATH", t.TempDir())
+	if _, err := ResolveExecutable(context.Background(), ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("missing browser err=%v", err)
+	}
+}
+
+func TestLaunchExpiredContextIsNotUnavailable(t *testing.T) {
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (RodFactory{}).Launch(ctx, LaunchOptions{ProfileDir: paths.Browser, Headless: true})
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrUnavailable) || errors.Is(err, ErrLaunch) {
+		t.Fatalf("expired launch remapped: %v", err)
+	}
+}
+
 func TestRuntimeErrorClassification(t *testing.T) {
 	if got := numericVersion("Google Chrome 143.0.7499.40"); got != "143.0.7499.40" {
 		t.Fatalf("version=%q", got)

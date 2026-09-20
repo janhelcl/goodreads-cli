@@ -37,12 +37,18 @@ type Executable struct {
 // ResolveExecutable does not auto-download a browser. The managed Chromium
 // fallback remains gated on the compatibility and first-run download spike.
 func ResolveExecutable(ctx context.Context, explicit string) (Executable, error) {
+	if err := ctx.Err(); err != nil {
+		return Executable{}, err
+	}
 	if explicit == "" {
 		explicit = os.Getenv("GOODREADS_CLI_BROWSER")
 	}
 	if explicit != "" {
 		found, err := validateExecutable(ctx, explicit)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return Executable{}, ctxErr
+			}
 			return Executable{}, fmt.Errorf("%w: configured browser is unsupported (%v)", ErrUnavailable, err)
 		}
 		return found, nil
@@ -71,9 +77,16 @@ func ResolveExecutable(ctx context.Context, explicit string) (Executable, error)
 		if err != nil {
 			continue
 		}
-		if found, err := validateExecutable(ctx, path); err == nil {
+		found, err := validateExecutable(ctx, path)
+		if err == nil {
 			return found, nil
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Executable{}, ctxErr
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Executable{}, err
 	}
 	return Executable{}, ErrUnavailable
 }
@@ -91,6 +104,9 @@ func validateExecutable(ctx context.Context, path string) (Executable, error) {
 	defer cancel()
 	out, err := exec.CommandContext(probeCtx, resolved, "--version").Output()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Executable{}, ctxErr
+		}
 		return Executable{}, err
 	}
 	version := strings.TrimSpace(string(out))
@@ -165,6 +181,9 @@ type Page interface {
 type RodFactory struct{}
 
 func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !filepath.IsAbs(opts.ProfileDir) || opts.ProfileDir == "" {
 		return nil, fmt.Errorf("browser profile path must be absolute")
 	}
@@ -199,6 +218,9 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 		Set("no-first-run").Set("no-startup-window")
 	controlURL, err := l.Launch()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("%w: %v", ErrLaunch, err)
 	}
 	if !loopbackControlURL(controlURL) {
@@ -208,6 +230,9 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 	r := rod.New().ControlURL(controlURL).Context(ctx)
 	if err := r.Connect(); err != nil {
 		l.Kill()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("%w: %v", ErrLaunch, err)
 	}
 	allowed := opts.AllowedOrigins

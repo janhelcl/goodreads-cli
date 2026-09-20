@@ -311,7 +311,7 @@ Keep these stable once released:
 3 authentication, session, or browser-launch error
 4 book not found / ISBN not resolved
 5 mutation ambiguous, partially completed, or verification failed
-6 network / remote service failure or incomplete bounded scan
+6 timeout, network / remote service failure, or incomplete bounded scan
 7 Goodreads UI compatibility drift
 8 operation busy / profile locked
 9 browser unavailable or unsupported
@@ -319,6 +319,9 @@ Keep these stable once released:
 
 Unknown commands are usage errors: they use exit 2 and print usage text, not
 an internal failure.
+
+A command timeout during browser discovery or launch is still a timeout
+(exit 6). It is not remapped to browser unavailable or launch failure.
 
 MCP maps the same application error taxonomy rather than shell codes.
 

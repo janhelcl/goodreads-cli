@@ -157,6 +157,33 @@ func TestRunContextPropagatesCancellation(t *testing.T) {
 	}
 }
 
+func TestTinyTimeoutIsTimeoutNotUnavailable(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"status", "--timeout", "1ms", "--json", "--debug"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{wait: true}, nil
+	})
+	message := errOut.String()
+	if code != 6 || out.Len() != 0 || !strings.Contains(message, "timed out") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), message)
+	}
+	if strings.Contains(message, "No supported Chrome") {
+		t.Fatalf("timeout classified as unavailable: %q", message)
+	}
+	if !strings.Contains(message, "error_kind=timeout") || !strings.Contains(message, "exit_code=6") {
+		t.Fatalf("debug classification: %q", message)
+	}
+}
+
+func TestBrowserUnavailableKeepsExitNine(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"status", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{err: app.ErrBrowserUnavailable}, nil
+	})
+	if code != 9 || out.Len() != 0 || !strings.Contains(errOut.String(), "No supported Chrome") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
 func TestBusyErrorIsSafeAndTyped(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run([]string{"status", "--json"}, &out, &errOut, func(bool) (app.Service, error) {

@@ -170,6 +170,23 @@ func TestServiceReturnsBrowserCloseError(t *testing.T) {
 	}
 }
 
+func TestExpiredContextDoesNotLaunchBrowser(t *testing.T) {
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	factory := &factoryStub{}
+	auth := service{factory: factory, paths: paths}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := auth.Status(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("status err=%v", err)
+	}
+	if len(factory.calls) != 0 {
+		t.Fatalf("launched after timeout: %+v", factory.calls)
+	}
+}
+
 func TestServiceEmitsSafeOperationalDiagnostics(t *testing.T) {
 	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
 	if err := paths.EnsureBrowser(); err != nil {

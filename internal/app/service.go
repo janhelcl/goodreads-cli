@@ -132,6 +132,9 @@ func (s *service) withBrowser(
 }
 
 func (s *service) withProfileLock(ctx context.Context, use func() error) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	lock, err := s.paths.Acquire(lockCtx)

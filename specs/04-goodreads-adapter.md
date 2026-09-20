@@ -44,7 +44,7 @@ Initial browser resolution order:
 2. a compatible installed Chrome, Chromium, or Edge;
 3. a Rod-managed Chromium, if the packaging/first-run experiment confirms an acceptable user experience.
 
-Record the selected product/version in redacted debug logs. Do not silently switch between materially different profile formats if doing so risks corruption.
+Record the selected product/version in redacted debug logs. Do not silently switch between materially different profile formats if doing so risks corruption. A timeout or cancellation while locating or launching the browser stays a timeout or cancellation; it is not remapped to browser-unavailable or launch-failure.
 
 ## Browser-assisted authentication
 

@@ -14,7 +14,7 @@ than today, freshly verified it, and restored the original unset date.
 
 | Stage | Platform/browser | Evidence | Result |
 |---|---|---|---|
-| Dedicated profile launch and restart | Linux x86-64, Google Chrome 143.0.7499.40, Rod v0.116.2 | `GOODREADS_BROWSER_TESTS=1 go test ./internal/browser -v` against `httptest.Server` | Pass: persistent synthetic cookie survived a clean headless restart |
+| Dedicated profile launch and restart | Linux x86-64, Google Chrome 143.0.7499.40, Rod v0.116.2 | `GOODREADS_BROWSER_TESTS=1 go test ./internal/browser -v` against `httptest.Server`. The 2026-09-20 UAT saw `status --timeout 1ms` return exit 9 because `--version` discovery lost the race and was wrapped as unavailable. After discovery, launch, and lock acquisition keep an expired operation context as timeout/cancellation, a hanging local Chrome fixture with a 40ms deadline returns `timeout` rather than `browser_unavailable`, and three live `status --timeout 1ms --json --debug` retries on this session returned exit 6 with `error_kind=timeout`. | Pass: persistent synthetic cookie survived a clean headless restart. A tiny command timeout during browser discovery is a timeout, not browser unavailable. |
 | Local CDP and origin policy | Same | launcher accepts only a loopback CDP URL; synthetic redirect to a different local origin is rejected | Pass |
 | Cancellation and shutdown | Same | local Rod component test cancels the operation and waits for Chrome to exit | Pass |
 | Browser product pinning | Same | test refuses a different Chromium product for an existing profile and clears the marker with profile deletion | Pass |

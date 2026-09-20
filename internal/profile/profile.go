@@ -137,8 +137,12 @@ type Lock struct {
 }
 
 // Acquire uses an OS lock, not a timestamp heuristic. A cancelled or timed-out
-// wait returns ErrBusy when another process still owns the lock.
+// wait returns ErrBusy when another process still owns the lock. An already
+// expired operation context stays a timeout or cancellation; it is not busy.
 func (p Paths) Acquire(ctx context.Context) (*Lock, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := p.ensureRoot(); err != nil {
 		return nil, err
 	}

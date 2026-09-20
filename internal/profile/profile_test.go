@@ -33,6 +33,11 @@ func TestLockAndProfileLifecycle(t *testing.T) {
 	if err := first.Release(); err != nil {
 		t.Fatal(err)
 	}
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Acquire(expired); !errors.Is(err, context.Canceled) || errors.Is(err, ErrBusy) {
+		t.Fatalf("expired acquire remapped: %v", err)
+	}
 	third, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatal(err)
