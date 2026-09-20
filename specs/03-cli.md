@@ -247,7 +247,7 @@ gr review 9781603580557 --file review.md
 gr review 9781603580557 --clear
 ```
 
-Exactly one of `--text`, `--file`, or `--clear` is required. The command changes only the review field.
+Exactly one of `--text`, `--file`, or `--clear` is required. The command changes only the review field. `--file` treats a single trailing newline (`\n` or `\r\n`) as a file terminator rather than review content, so ordinary editor-saved files verify. `--text` is used as supplied.
 
 ## Mutation result
 

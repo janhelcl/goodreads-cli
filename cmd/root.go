@@ -470,7 +470,7 @@ func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRun
 				if err != nil {
 					return fmt.Errorf("%w: could not read --file", errUsage)
 				}
-				desired = string(content)
+				desired = reviewFileContents(content)
 			}
 			if clearReview {
 				desired = ""
@@ -577,4 +577,15 @@ func publicError(err error) string {
 		return err.Error()
 	}
 	return app.DescribeError(err).Message
+}
+
+// reviewFileContents treats a single trailing newline as a POSIX/Windows file
+// terminator, not review text. Ordinary editor-saved files end that way, and
+// Goodreads does not keep that extra newline on readback.
+func reviewFileContents(content []byte) string {
+	text := string(content)
+	if strings.HasSuffix(text, "\r\n") {
+		return strings.TrimSuffix(text, "\r\n")
+	}
+	return strings.TrimSuffix(text, "\n")
 }

@@ -22,6 +22,7 @@ type authStub struct {
 	export      domain.ExportResult
 	exportOut   *string
 	exportForce *bool
+	review      *string
 	err         error
 	wait        bool
 }
@@ -57,7 +58,10 @@ func (a authStub) Start(context.Context, domain.ISBN) (domain.MutationResult, er
 func (a authStub) Finish(context.Context, domain.ISBN, time.Time, *int) (domain.MutationResult, error) {
 	return a.result, a.err
 }
-func (a authStub) Review(context.Context, domain.ISBN, *string) (domain.MutationResult, error) {
+func (a authStub) Review(_ context.Context, _ domain.ISBN, review *string) (domain.MutationResult, error) {
+	if a.review != nil && review != nil {
+		*a.review = *review
+	}
 	return a.result, a.err
 }
 func (a authStub) Export(_ context.Context, destination string, force bool) (domain.ExportResult, error) {
@@ -457,6 +461,83 @@ func TestReviewJSONFileClearAndValidation(t *testing.T) {
 	})
 	if code != 0 || !strings.Contains(out.String(), `"review":""`) || errOut.Len() != 0 {
 		t.Fatalf("clear review code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestReviewFileContentsStripsOneTerminator(t *testing.T) {
+	wanted := "A precise review."
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"unix", wanted + "\n", wanted},
+		{"windows", wanted + "\r\n", wanted},
+		{"no terminator", wanted, wanted},
+		{"keeps extra blank line", wanted + "\n\n", wanted + "\n"},
+		{"multiline unix", "line one\nline two\n", "line one\nline two"},
+		{"empty", "", ""},
+		{"only newline", "\n", ""},
+	} {
+		if got := reviewFileContents([]byte(tc.in)); got != tc.want {
+			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestReviewFileStripsTerminatingNewlineBeforeService(t *testing.T) {
+	wanted := "A precise review."
+	result := domain.MutationResult{
+		Operation: "review",
+		After:     domain.Book{BookID: "42", Title: "Invented Book"},
+		Changes:   domain.BookUpdate{Review: &wanted},
+		Verified:  true,
+	}
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+		code    int
+	}{
+		{"unix", wanted + "\n", wanted, 0},
+		{"windows", wanted + "\r\n", wanted, 0},
+		{"extra blank line", wanted + "\n\n", wanted + "\n", 0},
+		{"only newline", "\n", "", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := t.TempDir() + "/review.md"
+			if err := os.WriteFile(path, []byte(tc.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var got string
+			var out, errOut bytes.Buffer
+			called := false
+			code := run([]string{"review", "9780142437247", "--file", path}, &out, &errOut, func(bool) (app.Service, error) {
+				called = true
+				return authStub{result: result, review: &got}, nil
+			})
+			if code != tc.code {
+				t.Fatalf("code=%d want=%d stdout=%q stderr=%q", code, tc.code, out.String(), errOut.String())
+			}
+			if tc.code == 2 {
+				if called {
+					t.Fatal("empty terminator-only file started the service")
+				}
+				return
+			}
+			if !called || got != tc.want || errOut.Len() != 0 {
+				t.Fatalf("called=%t got=%q want=%q stderr=%q", called, got, tc.want, errOut.String())
+			}
+		})
+	}
+
+	var got string
+	var out, errOut bytes.Buffer
+	code := run([]string{"review", "9780142437247", "--text", wanted + "\n"}, &out, &errOut, func(bool) (app.Service, error) {
+		return authStub{result: result, review: &got}, nil
+	})
+	if code != 0 || got != wanted+"\n" || errOut.Len() != 0 {
+		t.Fatalf("text keeps newline code=%d got=%q stderr=%q", code, got, errOut.String())
 	}
 }
 
