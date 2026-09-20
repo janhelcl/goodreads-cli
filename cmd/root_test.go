@@ -119,6 +119,32 @@ func TestUsageRejectedBeforeService(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandIsUsageError(t *testing.T) {
+	for _, args := range [][]string{{"foobar"}, {"--debug", "foobar"}, {"--json", "foobar"}} {
+		var out, errOut bytes.Buffer
+		called := false
+		code := run(args, &out, &errOut, func(bool) (app.Service, error) {
+			called = true
+			return authStub{}, nil
+		})
+		message := errOut.String()
+		if code != 2 || called || out.Len() != 0 {
+			t.Fatalf("%v: code=%d called=%t stdout=%q stderr=%q", args, code, called, out.String(), message)
+		}
+		if !strings.Contains(message, `unknown command "foobar"`) {
+			t.Fatalf("%v: missing usage text: %q", args, message)
+		}
+		if strings.Contains(message, "Goodreads operation failed.") {
+			t.Fatalf("%v: treated unknown command as internal: %q", args, message)
+		}
+		if args[0] == "--debug" &&
+			(!strings.Contains(message, "error_kind=invalid_arguments") ||
+				!strings.Contains(message, "exit_code=2")) {
+			t.Fatalf("%v: debug classification: %q", args, message)
+		}
+	}
+}
+
 func TestRunContextPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

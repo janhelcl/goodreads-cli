@@ -317,6 +317,9 @@ Keep these stable once released:
 9 browser unavailable or unsupported
 ```
 
+Unknown commands are usage errors: they use exit 2 and print usage text, not
+an internal failure.
+
 MCP maps the same application error taxonomy rather than shell codes.
 
 ## Browser diagnostics

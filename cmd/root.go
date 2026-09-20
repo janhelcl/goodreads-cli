@@ -57,6 +57,12 @@ func runContextWithMCP(
 	root.SetArgs(args)
 	started := time.Now()
 	if err := root.Execute(); err != nil {
+		if strings.HasPrefix(err.Error(), "unknown command ") {
+			// Find fails before Execute parses flags, so `gr --debug foobar`
+			// would otherwise skip the debug line.
+			_ = root.ParseFlags(args)
+		}
+		err = asUsageError(err)
 		if debug, _ := root.PersistentFlags().GetBool("debug"); debug {
 			stage := app.SafeErrorStage(err)
 			if stage == "" {
@@ -67,7 +73,7 @@ func runContextWithMCP(
 				"debug: stage=%s elapsed_ms=%d error_kind=%s retry_count=0 exit_code=%d\n",
 				stage,
 				time.Since(started).Milliseconds(),
-				app.DescribeError(err).Kind,
+				errorKind(err),
 				exitCode(err),
 			)
 		}
@@ -546,11 +552,31 @@ func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRun
 	return root
 }
 
+// asUsageError maps Cobra's unknown-command error onto the same usage
+// sentinel as invalid flags and argument checks. Cobra does not wrap that
+// case, so it would otherwise look like an internal Goodreads failure.
+func asUsageError(err error) error {
+	if err == nil || errors.Is(err, errUsage) {
+		return err
+	}
+	if strings.HasPrefix(err.Error(), "unknown command ") {
+		return fmt.Errorf("%w: %v", errUsage, err)
+	}
+	return err
+}
+
+func errorKind(err error) app.ErrorKind {
+	if errors.Is(err, errUsage) {
+		return app.ErrorInvalidArguments
+	}
+	return app.DescribeError(err).Kind
+}
+
 func exitCode(err error) int {
 	if errors.Is(err, errUsage) {
 		return 2
 	}
-	switch app.DescribeError(err).Kind {
+	switch errorKind(err) {
 	case app.ErrorInvalidArguments:
 		return 2
 	case app.ErrorBusy:
