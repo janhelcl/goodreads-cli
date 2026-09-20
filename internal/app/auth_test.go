@@ -20,6 +20,7 @@ func (p pageStub) HasText(context.Context, string, string) (bool, error) { retur
 func (p pageStub) Close() error                                          { return nil }
 func (p pageStub) HTML(context.Context) (string, error)                  { return "", nil }
 func (p pageStub) Click(context.Context, string) error                   { return nil }
+func (p pageStub) ClickDOM(context.Context, string) error                { return nil }
 func (p pageStub) ClickAndWaitForRequest(context.Context, string) error  { return nil }
 func (p pageStub) ClickAndAcceptConfirmAndWaitForRequest(context.Context, string) error {
 	return nil

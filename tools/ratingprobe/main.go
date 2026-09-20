@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		fail("invalid ISBN")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	paths, err := profile.DefaultPaths()
 	if err != nil {
@@ -131,42 +131,47 @@ func main() {
 			}).Length()
 			fmt.Printf("form_action_%s_count %d\n", action, count)
 		}
-		for _, unit := range []string{"year", "month", "day"} {
-			selects := form.Find(fmt.Sprintf("select[name$='[end][%s]']", unit))
-			clearable := selects.FilterFunction(func(_ int, selection *goquery.Selection) bool {
-				return selection.Find("option[selected]").FilterFunction(func(_ int, option *goquery.Selection) bool {
-					return option.AttrOr("value", "") != ""
-				}).Length() == 1
-			})
-			fmt.Printf("end_%s_select_count %d\n", unit, selects.Length())
-			fmt.Printf("end_%s_clearable_count %d\n", unit, clearable.Length())
-			fmt.Printf("end_%s_blank_option_count %d\n", unit, clearable.Find("option[value='']").Length())
-			selects.Each(func(i int, selection *goquery.Selection) {
-				name := selection.AttrOr("name", "")
-				current, valueErr := edit.Value(ctx, fmt.Sprintf(`select[name="%s"]`, name))
-				blank := selection.Find("option").FilterFunction(func(_ int, option *goquery.Selection) bool {
-					return strings.TrimSpace(option.Text()) == ""
-				}).First()
-				fmt.Printf("end_%s[%d]_current_pattern=%q value_error=%t blank_text_options=%d blank_value_pattern=%q\n",
-					unit, i, valuePattern(current), valueErr != nil,
-					selection.Find("option").FilterFunction(func(_ int, option *goquery.Selection) bool {
+		fmt.Println("rereading_table_count", doc.Find("table.rereadingDatesTable").Length())
+		fmt.Println("session_row_count", doc.Find("table.rereadingDatesTable tr.js-readingSessionRow").Length())
+		fmt.Println("delete_link_count", doc.Find("table.rereadingDatesTable a.deleteReadingSession").Length())
+		for _, bound := range []string{"start", "end"} {
+			for _, unit := range []string{"year", "month", "day"} {
+				selects := form.Find(fmt.Sprintf("select[name$='[%s][%s]']", bound, unit))
+				clearable := selects.FilterFunction(func(_ int, selection *goquery.Selection) bool {
+					return selection.Find("option[selected]").FilterFunction(func(_ int, option *goquery.Selection) bool {
+						return option.AttrOr("value", "") != ""
+					}).Length() == 1
+				})
+				fmt.Printf("%s_%s_select_count %d\n", bound, unit, selects.Length())
+				fmt.Printf("%s_%s_clearable_count %d\n", bound, unit, clearable.Length())
+				fmt.Printf("%s_%s_blank_option_count %d\n", bound, unit, clearable.Find("option[value='']").Length())
+				selects.Each(func(i int, selection *goquery.Selection) {
+					name := selection.AttrOr("name", "")
+					current, valueErr := edit.Value(ctx, fmt.Sprintf(`select[name="%s"]`, name))
+					blank := selection.Find("option").FilterFunction(func(_ int, option *goquery.Selection) bool {
 						return strings.TrimSpace(option.Text()) == ""
-					}).Length(), valuePattern(blank.AttrOr("value", "")))
-				for _, placeholder := range []string{unit, strings.ToUpper(unit[:1]) + unit[1:]} {
-					fmt.Printf("end_%s[%d]_current_equals_%s=%t option_equals_%s=%d\n",
-						unit, i, placeholder, current == placeholder, placeholder,
-						selection.Find(fmt.Sprintf(`option[value="%s"]`, placeholder)).Length())
-				}
-				if unit == "year" {
-					ancestor := selection.Parent()
-					for depth := 0; depth < 6 && ancestor.Length() == 1; depth++ {
-						fmt.Printf("end_year[%d]_ancestor[%d] tag=%q class=%q delete_links=%d\n",
-							i, depth, goquery.NodeName(ancestor), ancestor.AttrOr("class", ""),
-							ancestor.Find("a.deleteReadingSession").Length())
-						ancestor = ancestor.Parent()
+					}).First()
+					fmt.Printf("%s_%s[%d]_current_pattern=%q value_error=%t blank_text_options=%d blank_value_pattern=%q\n",
+						bound, unit, i, valuePattern(current), valueErr != nil,
+						selection.Find("option").FilterFunction(func(_ int, option *goquery.Selection) bool {
+							return strings.TrimSpace(option.Text()) == ""
+						}).Length(), valuePattern(blank.AttrOr("value", "")))
+					for _, placeholder := range []string{unit, strings.ToUpper(unit[:1]) + unit[1:]} {
+						fmt.Printf("%s_%s[%d]_current_equals_%s=%t option_equals_%s=%d\n",
+							bound, unit, i, placeholder, current == placeholder, placeholder,
+							selection.Find(fmt.Sprintf(`option[value="%s"]`, placeholder)).Length())
 					}
-				}
-			})
+					if unit == "year" {
+						ancestor := selection.Parent()
+						for depth := 0; depth < 6 && ancestor.Length() == 1; depth++ {
+							fmt.Printf("%s_year[%d]_ancestor[%d] tag=%q class=%q delete_links=%d\n",
+								bound, i, depth, goquery.NodeName(ancestor), ancestor.AttrOr("class", ""),
+								ancestor.Find("a.deleteReadingSession").Length())
+							ancestor = ancestor.Parent()
+						}
+					}
+				})
+			}
 		}
 	}
 }

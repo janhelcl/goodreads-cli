@@ -32,7 +32,7 @@ func main() {
 		fail("invalid date")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	paths, err := profile.DefaultPaths()
 	if err != nil {
@@ -84,7 +84,7 @@ func restore(b browser.Browser, ctx context.Context, isbn domain.ISBN, original 
 	_, _ = goodreads.SetStatus(ctx, b, isbn, original.Status)
 	if original.DateRead == nil {
 		if _, err := goodreads.ClearFinishDate(ctx, b, isbn); err != nil {
-			return fmt.Errorf("finish-date restoration could not be verified")
+			return fmt.Errorf("finish-date restoration could not be verified (%v)", err)
 		}
 	}
 	restored, err := goodreads.SetStatus(ctx, b, isbn, original.Status)

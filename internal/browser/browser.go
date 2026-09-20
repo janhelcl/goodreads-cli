@@ -155,6 +155,7 @@ type Page interface {
 	ClickAndWaitForRequest(ctx context.Context, selector string) error
 	ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, selector string) error
 	ClickAndWaitForDownload(ctx context.Context, selector string) (Download, error)
+	ClickDOM(ctx context.Context, selector string) error
 	Input(ctx context.Context, selector, value string) error
 	SelectValue(ctx context.Context, selector, value string) error
 	Value(ctx context.Context, selector string) (string, error)
@@ -408,6 +409,26 @@ func (p *rodPage) Click(ctx context.Context, selector string) error {
 		return classifyRuntimeError(err)
 	}
 	if err := element.ScrollIntoView(); err != nil {
+		return classifyRuntimeError(err)
+	}
+	return classifyRuntimeError(element.Click(proto.InputMouseButtonLeft, 1))
+}
+
+// ClickDOM reveals a CSS-hidden control and then clicks it. Goodreads keeps
+// some review-editor actions in the layout but hidden until hover.
+func (p *rodPage) ClickDOM(ctx context.Context, selector string) error {
+	element, err := p.rod.Context(ctx).Element(selector)
+	if err != nil {
+		return classifyRuntimeError(err)
+	}
+	_, err = element.Eval(`() => {
+		this.style.display = 'inline';
+		this.style.visibility = 'visible';
+		this.style.pointerEvents = 'auto';
+		this.hidden = false;
+		return true;
+	}`)
+	if err != nil {
 		return classifyRuntimeError(err)
 	}
 	return classifyRuntimeError(element.Click(proto.InputMouseButtonLeft, 1))

@@ -42,6 +42,9 @@ func (p *fakePage) Click(_ context.Context, selector string) error {
 	}
 	return nil
 }
+func (p *fakePage) ClickDOM(ctx context.Context, selector string) error {
+	return p.Click(ctx, selector)
+}
 func (p *fakePage) ClickAndWaitForRequest(ctx context.Context, selector string) error {
 	return p.Click(ctx, selector)
 }

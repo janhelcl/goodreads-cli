@@ -121,6 +121,13 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 	defer escape.Close()
 	var mutationRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hidden" {
+			fmt.Fprint(w, `<html><body>
+				<a id="delete" class="deleteReadingSession" style="display:none" href="#" onclick="document.getElementById('armed').value='true'; return false;">delete</a>
+				<input id="armed" value="false">
+			</body></html>`)
+			return
+		}
 		if r.URL.Path == "/select" {
 			fmt.Fprint(w, `<html><body><select id="year"><option>Year</option><option>2026</option></select></body></html>`)
 			return
@@ -239,6 +246,22 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 		t.Fatalf("selected value=%q err=%v", selected, err)
 	}
 	_ = selectPage.Close()
+	hiddenPage, err := first.NewPage(ctx, server.URL+"/hidden")
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if err := hiddenPage.ClickDOM(ctx, "#delete"); err != nil {
+		_ = hiddenPage.Close()
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if armed, err := hiddenPage.Value(ctx, "#armed"); err != nil || armed != "true" {
+		_ = hiddenPage.Close()
+		_ = first.Close()
+		t.Fatalf("hidden click armed=%q err=%v", armed, err)
+	}
+	_ = hiddenPage.Close()
 	inputPage, err := first.NewPage(ctx, server.URL+"/input")
 	if err != nil {
 		_ = first.Close()
