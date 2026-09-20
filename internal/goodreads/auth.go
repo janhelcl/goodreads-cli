@@ -21,9 +21,9 @@ var (
 )
 
 var (
-	ErrCompatibility  = errors.New("Goodreads UI changed")
-	ErrSessionExpired = errors.New("Goodreads session expired")
-	ErrLoginCancelled = errors.New("Goodreads login was cancelled or timed out")
+	ErrCompatibility  = errors.New("goodreads UI changed")
+	ErrSessionExpired = errors.New("goodreads session expired")
+	ErrLoginCancelled = errors.New("goodreads login was cancelled or timed out")
 )
 
 type ConnectionStatus struct {

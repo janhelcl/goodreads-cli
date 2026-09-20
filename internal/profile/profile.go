@@ -11,7 +11,7 @@ import (
 	"github.com/gofrs/flock"
 )
 
-var ErrBusy = errors.New("Goodreads browser profile is in use")
+var ErrBusy = errors.New("goodreads browser profile is in use")
 
 // Paths names only data owned by this application. The lock remains outside the
 // Chromium directory so logout can remove the profile while holding the lock.

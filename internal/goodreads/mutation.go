@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	ErrMutationAmbiguous  = errors.New("Goodreads mutation result is ambiguous")
-	ErrVerificationFailed = errors.New("Goodreads mutation verification failed")
+	ErrMutationAmbiguous  = errors.New("goodreads mutation result is ambiguous")
+	ErrVerificationFailed = errors.New("goodreads mutation verification failed")
 )
 
 type VerificationError struct {

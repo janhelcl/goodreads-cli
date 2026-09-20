@@ -34,8 +34,7 @@ func TestRodGoodreadsFlows(t *testing.T) {
 	var ratingRequests atomic.Int32
 	var statusRequests atomic.Int32
 
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/review/list":
 			if r.URL.Query().Get("page") != "2" {

@@ -246,15 +246,21 @@ Inject fake services and test:
 
 Run tools against the same fake application service and verify schema, result, serialization, and error mapping. No separate Goodreads logic is allowed.
 
-### Live tests
+### Live probes
 
-Live Goodreads tests are opt-in, serial, and use a dedicated account.
+Live Goodreads probes are opt-in, serial, and use a dedicated account. They are
+development commands rather than `go test` suites, and every probe requires the
+`liveprobe` build tag.
 
-Example:
+Start with the headed login/profile-restart probe:
 
 ```text
-GOODREADS_LIVE_TESTS=1 go test ./internal/goodreads -tags=live
+go run -tags liveprobe ./tools/liveprobe
 ```
+
+After login, run the operation-specific probes documented in the compatibility
+matrix. Canary commands may mutate the dedicated test account and must be given
+only the explicit arguments they document.
 
 Requirements:
 
@@ -273,7 +279,9 @@ Continuous CI runs for pull requests and pushes to `main` and includes:
 
 - `gofmt` check;
 - `go vet ./...`;
+- `staticcheck ./...`;
 - `go test ./...`;
+- `go test -tags liveprobe ./...` to compile the development probes without running them;
 - race detector on Linux;
 - builds on Linux, macOS, and Windows;
 - dependency/vulnerability scan where practical;

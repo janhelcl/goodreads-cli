@@ -29,7 +29,7 @@ const (
 	maxExportBytes       = 100 << 20
 )
 
-var ErrExportFailed = errors.New("Goodreads export failed")
+var ErrExportFailed = errors.New("goodreads export failed")
 
 type exportPage struct {
 	Status string

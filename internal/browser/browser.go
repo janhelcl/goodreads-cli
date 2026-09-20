@@ -389,27 +389,28 @@ func effectivePort(u *url.URL) string {
 
 func (p *rodPage) Has(ctx context.Context, selector string) (bool, error) {
 	found, _, err := p.rod.Context(ctx).Has(selector)
-	return found, err
+	return found, classifyRuntimeError(err)
 }
 
 func (p *rodPage) HasText(ctx context.Context, selector, jsRegex string) (bool, error) {
 	found, _, err := p.rod.Context(ctx).HasR(selector, jsRegex)
-	return found, err
+	return found, classifyRuntimeError(err)
 }
 
 func (p *rodPage) HTML(ctx context.Context) (string, error) {
-	return p.rod.Context(ctx).HTML()
+	html, err := p.rod.Context(ctx).HTML()
+	return html, classifyRuntimeError(err)
 }
 
 func (p *rodPage) Click(ctx context.Context, selector string) error {
 	element, err := p.rod.Context(ctx).Element(selector)
 	if err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
 	if err := element.ScrollIntoView(); err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
-	return element.Click(proto.InputMouseButtonLeft, 1)
+	return classifyRuntimeError(element.Click(proto.InputMouseButtonLeft, 1))
 }
 
 // ClickAndWaitForRequest clicks one control and waits for the first
@@ -450,7 +451,7 @@ func (p *rodPage) ClickAndWaitForRequest(ctx context.Context, selector string) e
 	if err != nil {
 		cancel()
 		wait()
-		return err
+		return classifyRuntimeError(err)
 	}
 	wait()
 	if ctx.Err() != nil {
@@ -504,7 +505,7 @@ func (p *rodPage) ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, se
 	if err != nil {
 		cancel()
 		waitRequest()
-		return err
+		return classifyRuntimeError(err)
 	}
 	waitDialog, handleDialog := p.rod.Context(ctx).HandleDialog()
 	clickResult := make(chan error, 1)
@@ -520,10 +521,10 @@ func (p *rodPage) ClickAndAcceptConfirmAndWaitForRequest(ctx context.Context, se
 		return fmt.Errorf("expected a confirmation dialog")
 	}
 	if err := handleDialog(&proto.PageHandleJavaScriptDialog{Accept: true}); err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
 	if err := <-clickResult; err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
 	waitRequest()
 	if ctx.Err() != nil {
@@ -566,14 +567,14 @@ func (p *rodPage) ClickAndWaitForDownload(ctx context.Context, selector string) 
 		err = element.ScrollIntoView()
 	}
 	if err != nil {
-		return Download{}, err
+		return Download{}, classifyRuntimeError(err)
 	}
 	eventCtx, cancel := context.WithCancel(ctx)
 	wait := p.rod.Browser().Context(eventCtx).WaitDownload(p.downloadDir)
 	if err := element.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		cancel()
 		wait()
-		return Download{}, err
+		return Download{}, classifyRuntimeError(err)
 	}
 	info := wait()
 	cancel()
@@ -597,21 +598,21 @@ func (p *rodPage) ClickAndWaitForDownload(ctx context.Context, selector string) 
 func (p *rodPage) Input(ctx context.Context, selector, value string) error {
 	element, err := p.rod.Context(ctx).Element(selector)
 	if err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
 	if err := element.ScrollIntoView(); err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
 	if err := element.SelectAllText(); err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
-	return element.Input(value)
+	return classifyRuntimeError(element.Input(value))
 }
 
 func (p *rodPage) SelectValue(ctx context.Context, selector, value string) error {
 	element, err := p.rod.Context(ctx).Element(selector)
 	if err != nil {
-		return err
+		return classifyRuntimeError(err)
 	}
 	err = element.Select([]string{fmt.Sprintf(`[value="%s"]`, value)}, true, rod.SelectorTypeCSSSector)
 	if err == nil {
@@ -619,21 +620,25 @@ func (p *rodPage) SelectValue(ctx context.Context, selector, value string) error
 	}
 	var notFound *rod.ElementNotFoundError
 	if !errors.As(err, &notFound) {
-		return err
+		return classifyRuntimeError(err)
 	}
 	// Goodreads year/day options currently omit value attributes, in which
 	// case the DOM value is their rendered text.
-	return element.Select([]string{"^" + regexp.QuoteMeta(value) + "$"}, true, rod.SelectorTypeRegex)
+	return classifyRuntimeError(element.Select(
+		[]string{"^" + regexp.QuoteMeta(value) + "$"},
+		true,
+		rod.SelectorTypeRegex,
+	))
 }
 
 func (p *rodPage) Value(ctx context.Context, selector string) (string, error) {
 	element, err := p.rod.Context(ctx).Element(selector)
 	if err != nil {
-		return "", err
+		return "", classifyRuntimeError(err)
 	}
 	value, err := element.Property("value")
 	if err != nil {
-		return "", err
+		return "", classifyRuntimeError(err)
 	}
 	return value.Str(), nil
 }

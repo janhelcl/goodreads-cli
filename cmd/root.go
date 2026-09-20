@@ -77,10 +77,6 @@ func runContextWithMCP(
 	return 0
 }
 
-func newRoot(out, errOut io.Writer, factory serviceFactory) *cobra.Command {
-	return newRootWithMCP(out, errOut, factory, internalmcp.Run)
-}
-
 func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRunner) *cobra.Command {
 	var jsonOutput bool
 	var headed bool

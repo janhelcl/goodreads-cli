@@ -51,9 +51,10 @@ download, and either writes it to stdout or atomically installs `--out`.
 verified mutations through semantic tools; login remains a separate
 interactive CLI command.
 Version tags produce cross-platform release archives and a SHA-256 checksum
-manifest. Pull requests and `main` run formatting, vet, tests, race detection,
-vulnerability scanning, six target builds, and local-only Chrome integration
-flows before release packaging repeats those gates.
+manifest. Pull requests and `main` run formatting, vet, Staticcheck, tests,
+live-probe compilation, race detection, vulnerability scanning, six target
+builds, and local-only Chrome integration flows before release packaging
+repeats those gates.
 Authentication, populated/filtered shelf reads, and reversible live canaries
 for add, status, rating, finish date, and review passed. Exact lookup treats a
 unique owner ISBN match as conclusive when no other row shares that book ID,

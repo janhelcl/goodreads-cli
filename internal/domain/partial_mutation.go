@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var ErrPartialMutation = errors.New("Goodreads mutation partially completed")
+var ErrPartialMutation = errors.New("goodreads mutation partially completed")
 
 type ObservedMutationState struct {
 	Status   ReadingStatus `json:"status,omitempty"`
