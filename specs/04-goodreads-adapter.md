@@ -115,11 +115,16 @@ Every operation has a total deadline.
 
 Use event/condition waits for:
 
-- page load and expected page identity;
+- a parseable document and expected page identity;
 - element actionable state;
 - network/navigation completion when relevant;
 - visible confirmation;
 - changed Goodreads state.
+
+`NewPage` waits until the location is no longer `about:blank` and `document.body`
+exists. It does not wait for `window.onload` or `document.readyState === "complete"`.
+A hanging image, third-party request, or unfinished HTML stream must not consume
+the operation deadline. Callers then assert page identity from the rendered DOM.
 
 Do not use unbounded waits. Short bounded settling delays MAY be used only when documented and paired with a real state condition.
 
@@ -128,6 +133,10 @@ Unexpected cross-origin navigation must stop the flow unless it is an allowed au
 ## Live library reads
 
 The adapter reads shelf/library pages loaded in this invocation.
+
+List reads navigate to the requested shelf (or the unfiltered library) and
+assert authenticated table identity there, including an empty `#booksBody`.
+They do not first load the unfiltered library solely to check the session.
 
 For each page:
 

@@ -310,7 +310,7 @@ func (b *rodBrowser) NewPage(ctx context.Context, targetURL string) (Page, error
 		return nil, classifyRuntimeError(err)
 	}
 	page := &rodPage{rod: p, allowed: b.allowed, login: b.login, downloadDir: b.downloadDir}
-	if err := p.Context(ctx).WaitLoad(); err != nil {
+	if err := waitDocumentReady(ctx, p); err != nil {
 		_ = p.Close()
 		return nil, classifyRuntimeError(err)
 	}
@@ -319,6 +319,35 @@ func (b *rodBrowser) NewPage(ctx context.Context, targetURL string) (Page, error
 		return nil, err
 	}
 	return page, nil
+}
+
+// waitDocumentReady waits until navigation has a real document body. It does
+// not wait for window.onload: a hanging image, third-party request, or
+// unfinished HTML stream must not consume the operation deadline. Callers
+// still assert page identity from the rendered DOM.
+func waitDocumentReady(ctx context.Context, p *rod.Page) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		res, err := p.Context(ctx).Eval(`() => {
+			const href = document.location.href
+			if (!href || href === "about:blank") {
+				return false
+			}
+			return document.body != null
+		}`)
+		if err == nil && res.Value.Bool() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			if err != nil && ctx.Err() == nil {
+				return err
+			}
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (b *rodBrowser) Close() error {

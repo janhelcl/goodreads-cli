@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
@@ -77,13 +78,6 @@ func scanShelf(
 	incompleteError error,
 	visit func(domain.Book) bool,
 ) error {
-	state, err := Status(ctx, b)
-	if err != nil {
-		return err
-	}
-	if !state.Connected {
-		return ErrSessionExpired
-	}
 	target, _ := url.Parse(libraryURL)
 	if shelf != "" {
 		query := target.Query()
@@ -97,30 +91,14 @@ func scanShelf(
 		}
 		visited[target.String()] = true
 		page, err := b.NewPage(ctx, target.String())
+		if errors.Is(err, browser.ErrOrigin) {
+			return ErrSessionExpired
+		}
 		if err != nil {
 			return fmt.Errorf("library.page: navigation failed: %w", err)
 		}
-		current, err := page.URL(ctx)
-		if err != nil {
-			_ = page.Close()
-			return fmt.Errorf("library.page: URL unavailable: %w", err)
-		}
-		currentURL, err := url.Parse(current)
-		if err != nil || !isGoodreadsPage(current) ||
-			(currentURL.Path != "/review/list" && !strings.HasPrefix(currentURL.Path, "/review/list/")) {
-			_ = page.Close()
-			return fmt.Errorf("%w at library.page: unexpected page", ErrCompatibility)
-		}
-		if shelf != "" && currentURL.Query().Get("shelf") != string(shelf) {
-			_ = page.Close()
-			return fmt.Errorf("%w at library.page: requested shelf was not applied", ErrCompatibility)
-		}
-		html, err := page.HTML(ctx)
+		parsed, currentURL, err := readLibraryShelfPage(ctx, page, shelf)
 		_ = page.Close()
-		if err != nil {
-			return fmt.Errorf("library.page: DOM unavailable: %w", err)
-		}
-		parsed, err := parseShelfPage(html)
 		if err != nil {
 			return err
 		}
@@ -144,6 +122,59 @@ func scanShelf(
 		}
 	}
 	return incompleteError
+}
+
+func readLibraryShelfPage(ctx context.Context, page browser.Page, shelf domain.ReadingStatus) (shelfPage, *url.URL, error) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var lastHTML string
+	haveHTML := false
+	for {
+		current, err := page.URL(ctx)
+		if err != nil {
+			return shelfPage{}, nil, fmt.Errorf("library.page: URL unavailable: %w", err)
+		}
+		currentURL, err := url.Parse(current)
+		if err != nil || !isGoodreadsPage(current) {
+			return shelfPage{}, nil, fmt.Errorf("%w at library.page: unexpected origin", ErrCompatibility)
+		}
+		if strings.HasPrefix(currentURL.Path, "/user/sign_in") {
+			return shelfPage{}, nil, ErrSessionExpired
+		}
+		if knownRemoteFailurePath(currentURL.Path) {
+			return shelfPage{}, nil, fmt.Errorf("%w at library.page", browser.ErrNetwork)
+		}
+		if currentURL.Path != "/review/list" && !strings.HasPrefix(currentURL.Path, "/review/list/") {
+			return shelfPage{}, nil, fmt.Errorf("%w at library.page: unexpected page", ErrCompatibility)
+		}
+		if shelf != "" && currentURL.Query().Get("shelf") != string(shelf) {
+			return shelfPage{}, nil, fmt.Errorf("%w at library.page: requested shelf was not applied", ErrCompatibility)
+		}
+		html, err := page.HTML(ctx)
+		if err != nil {
+			return shelfPage{}, nil, fmt.Errorf("library.page: DOM unavailable: %w", err)
+		}
+		if remoteFailureDocument(html) {
+			return shelfPage{}, nil, fmt.Errorf("%w at library.page", browser.ErrNetwork)
+		}
+		parsed, parseErr := parseShelfPage(html)
+		if parseErr == nil {
+			return parsed, currentURL, nil
+		}
+		if haveHTML && html == lastHTML {
+			return shelfPage{}, nil, parseErr
+		}
+		lastHTML = html
+		haveHTML = true
+		select {
+		case <-ctx.Done():
+			if parseErr != nil && ctx.Err() == nil {
+				return shelfPage{}, nil, parseErr
+			}
+			return shelfPage{}, nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func samePaginationScope(current, next *url.URL) bool {

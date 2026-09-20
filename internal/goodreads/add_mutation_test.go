@@ -108,7 +108,7 @@ func TestAddNewEditionClicksOnceAndVerifiesFreshOwnerRow(t *testing.T) {
 			"https://www.goodreads.com/review/edit/7": review,
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), empty, privatePage(), empty, added},
+			libraryURL: {privatePage(), empty, empty, added},
 		},
 	}
 	result, err := Add(context.Background(), b, isbn, domain.StatusToRead)

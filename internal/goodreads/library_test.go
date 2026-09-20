@@ -20,6 +20,10 @@ func libraryTestPage(html, url string) *fakePage {
 	}
 }
 
+const emptyCurrentlyReadingShelf = `<html><body><h1>My Books: Currently Reading (0)</h1><a href="/user/sign_out">Sign out</a>
+<table id="books"><thead><tr><th class="field title">title</th><th class="field author">author</th></tr></thead>
+<tbody id="booksBody"></tbody></table></body></html>`
+
 func TestLibraryPaginatesOnlyAsNeeded(t *testing.T) {
 	pageTwo := strings.Replace(shelfFixture, `<a class="next_page" href="?page=2">next</a>`, "", 1)
 	pageTwo = strings.Replace(pageTwo, "book/show/42.Invented_Book", "book/show/43.Another_Book", 1)
@@ -29,12 +33,12 @@ func TestLibraryPaginatesOnlyAsNeeded(t *testing.T) {
 		"https://www.goodreads.com/review/list/123?page=2": libraryTestPage(pageTwo, "https://www.goodreads.com/review/list/123?page=2"),
 	}}
 	books, err := Library(context.Background(), b, domain.LibraryFilter{Limit: 1})
-	if err != nil || len(books) != 1 || len(b.calls) != 2 {
+	if err != nil || len(books) != 1 || len(b.calls) != 1 {
 		t.Fatalf("early-stop books=%+v err=%v calls=%v", books, err, b.calls)
 	}
 	b.calls = nil
 	books, err = Library(context.Background(), b, domain.LibraryFilter{Rating: 3, Limit: 1})
-	if err != nil || len(books) != 1 || books[0].BookID != "43" || len(b.calls) != 3 {
+	if err != nil || len(books) != 1 || books[0].BookID != "43" || len(b.calls) != 2 {
 		t.Fatalf("filtered pagination books=%+v err=%v calls=%v", books, err, b.calls)
 	}
 }
@@ -56,6 +60,51 @@ func TestLibraryRejectsUnsafePagination(t *testing.T) {
 	}}
 	if _, err := Library(context.Background(), loop, domain.LibraryFilter{Rating: 5, Limit: 2}); !errors.Is(err, ErrCompatibility) {
 		t.Fatalf("pagination loop accepted: %v", err)
+	}
+}
+
+func TestLibraryReadsEmptyExclusiveShelf(t *testing.T) {
+	target := libraryURL + "?shelf=currently-reading"
+	pageURL := "https://www.goodreads.com/review/list/123?shelf=currently-reading"
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		target: libraryTestPage(emptyCurrentlyReadingShelf, pageURL),
+	}}
+	books, err := Library(context.Background(), b, domain.LibraryFilter{
+		Shelf: domain.StatusCurrentlyReading, Limit: 20,
+	})
+	if err != nil || len(books) != 0 || len(b.calls) != 1 {
+		t.Fatalf("empty exclusive shelf books=%+v err=%v calls=%v", books, err, b.calls)
+	}
+}
+
+func TestLibraryTreatsSignInRedirectAsExpired(t *testing.T) {
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		libraryURL: &fakePage{url: signInURL},
+	}}
+	_, err := Library(context.Background(), b, domain.LibraryFilter{Limit: 1})
+	if !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("expected expired session, got %v", err)
+	}
+}
+
+func TestLibraryWaitsForEmptyShelfTable(t *testing.T) {
+	target := libraryURL + "?shelf=currently-reading"
+	pageURL := "https://www.goodreads.com/review/list/123?shelf=currently-reading"
+	reads := 0
+	page := libraryTestPage("", pageURL)
+	page.htmlFunc = func() string {
+		reads++
+		if reads == 1 {
+			return `<html><body><h1>My Books: Currently Reading (0)</h1></body></html>`
+		}
+		return emptyCurrentlyReadingShelf
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{target: page}}
+	books, err := Library(context.Background(), b, domain.LibraryFilter{
+		Shelf: domain.StatusCurrentlyReading, Limit: 5,
+	})
+	if err != nil || len(books) != 0 || reads < 2 {
+		t.Fatalf("books=%+v err=%v reads=%d", books, err, reads)
 	}
 }
 
@@ -153,8 +202,9 @@ func TestExactResolutionRejectsPaginationScopeChange(t *testing.T) {
 
 func TestBookIDResolutionUsesExactScanBudget(t *testing.T) {
 	b := exactScanBrowser(12, nil)
+	b.pagesQueue[libraryURL] = b.pagesQueue[libraryURL][1:]
 	found, err := libraryContainsBookID(context.Background(), b, "1011")
-	if err != nil || !found || len(b.calls) != 12 {
+	if err != nil || !found || len(b.calls) != 11 {
 		t.Fatalf("found=%t err=%v calls=%d", found, err, len(b.calls))
 	}
 }

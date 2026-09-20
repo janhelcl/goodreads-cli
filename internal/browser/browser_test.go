@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -328,6 +329,115 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 	}
 	if value.Value.String() != "fixture=persisted" {
 		t.Fatalf("profile cookie did not persist: %q", value.Value.String())
+	}
+}
+
+func TestNewPageReturnsWhenSubresourcesHang(t *testing.T) {
+	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
+		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium component test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hang.png" {
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<html><body>
+			<h1>My Books: Currently Reading (0)</h1>
+			<table id="books"><thead><tr><th class="field title">title</th><th class="field author">author</th></tr></thead>
+			<tbody id="booksBody"></tbody></table>
+			<img src="/hang.png">
+		</body></html>`)
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := (RodFactory{}).Launch(ctx, LaunchOptions{
+		ProfileDir:     paths.Browser,
+		Headless:       true,
+		AllowedOrigins: []string{u.Scheme + "://" + u.Host},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	pageCtx, pageCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer pageCancel()
+	started := time.Now()
+	page, err := b.NewPage(pageCtx, server.URL+"/empty")
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("NewPage waited for hanging image: %v", err)
+	}
+	defer page.Close()
+	html, err := page.HTML(pageCtx)
+	if err != nil || !strings.Contains(html, `id="booksBody"`) {
+		t.Fatalf("empty shelf DOM unavailable: html=%q err=%v", html, err)
+	}
+	if elapsed > 4*time.Second {
+		t.Fatalf("NewPage waited for hanging image: %s", elapsed)
+	}
+}
+
+func TestNewPageReturnsWhenHTMLStreamHangs(t *testing.T) {
+	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
+		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium component test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<html><body>
+			<h1>My Books: Currently Reading (0)</h1>
+			<table id="books"><thead><tr><th class="field title">title</th><th class="field author">author</th></tr></thead>
+			<tbody id="booksBody"></tbody></table>
+		`)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := (RodFactory{}).Launch(ctx, LaunchOptions{
+		ProfileDir:     paths.Browser,
+		Headless:       true,
+		AllowedOrigins: []string{u.Scheme + "://" + u.Host},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	pageCtx, pageCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer pageCancel()
+	started := time.Now()
+	page, err := b.NewPage(pageCtx, server.URL+"/empty")
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("NewPage waited for hanging HTML stream: %v", err)
+	}
+	defer page.Close()
+	html, err := page.HTML(pageCtx)
+	if err != nil || !strings.Contains(html, `id="booksBody"`) {
+		t.Fatalf("empty shelf DOM unavailable: html=%q err=%v", html, err)
+	}
+	if elapsed > 4*time.Second {
+		t.Fatalf("NewPage waited for hanging HTML stream: %s", elapsed)
 	}
 }
 

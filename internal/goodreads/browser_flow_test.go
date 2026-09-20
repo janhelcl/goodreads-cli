@@ -176,3 +176,61 @@ func rodOwnerFixture(rating int, status domain.ReadingStatus) string {
 	)
 	return html
 }
+
+func TestRodEmptyExclusiveShelfIgnoresHangingSubresource(t *testing.T) {
+	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
+		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium Goodreads flow test")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hang.png" {
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<html><body>
+			<h1>My Books: Currently Reading (0)</h1>
+			<a href="/user/sign_out">Sign out</a>
+			<table id="books"><thead><tr><th class="field title">title</th><th class="field author">author</th></tr></thead>
+			<tbody id="booksBody"></tbody></table>
+			<img src="/hang.png">
+		</body></html>`)
+	}))
+	defer server.Close()
+
+	originalLibrary := libraryURL
+	originalOrigins := append([]string(nil), allowedGoodreadsOrigins...)
+	libraryURL = server.URL + "/review/list"
+	allowedGoodreadsOrigins = []string{server.URL}
+	t.Cleanup(func() {
+		libraryURL = originalLibrary
+		allowedGoodreadsOrigins = originalOrigins
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	origin, _ := url.Parse(server.URL)
+	b, err := (browser.RodFactory{}).Launch(ctx, browser.LaunchOptions{
+		ProfileDir:     paths.Browser,
+		Headless:       true,
+		AllowedOrigins: []string{origin.Scheme + "://" + origin.Host},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	started := time.Now()
+	books, err := Library(ctx, b, domain.LibraryFilter{Shelf: domain.StatusCurrentlyReading, Limit: 20})
+	elapsed := time.Since(started)
+	if err != nil || len(books) != 0 {
+		t.Fatalf("empty exclusive shelf books=%d err=%v", len(books), err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("empty exclusive shelf waited for hanging image: %s", elapsed)
+	}
+}
