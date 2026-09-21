@@ -127,19 +127,19 @@ func SetFinishDate(
 
 	afterCandidate, readbackErr := findMutationCandidate(ctx, b, isbn, finishDateStage, false)
 	if readbackErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
+		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable: %v", ErrMutationAmbiguous, readbackErr)
 	}
 	after := afterCandidate.Book
 	after.Review, readbackErr = loadFullReview(ctx, b, afterCandidate.ReviewURL, finishDateStage)
 	if readbackErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable", ErrMutationAmbiguous)
+		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable: %v", ErrMutationAmbiguous, readbackErr)
 	}
 	result, verifyErr := VerifyFinishDateMutation(before, after, wanted)
 	if verifyErr == nil {
 		return result, nil
 	}
 	if clickErr != nil || completionErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at %s: completion unknown", ErrMutationAmbiguous, finishDateStage)
+		return domain.MutationResult{}, fmt.Errorf("%w at %s: completion unknown (click=%v completion=%v verify=%v)", ErrMutationAmbiguous, finishDateStage, clickErr, completionErr, verifyErr)
 	}
 	retained, evidenceErr := editorRetainedFinishDate(ctx, b, afterCandidate.ReviewURL, wanted)
 	if evidenceErr == nil && retained {
