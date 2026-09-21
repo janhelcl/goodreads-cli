@@ -180,7 +180,7 @@ func TestClearFinishDateRemovesDatedSessionAndVerifies(t *testing.T) {
 	}
 	b := &fakeBrowser{
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), before, after},
+			libraryURL: {before, after},
 			reviewURL:  {reviewBefore, action, reviewAfter},
 		},
 	}
@@ -266,7 +266,7 @@ func TestClearFinishDateRemovesSoleDatedSession(t *testing.T) {
 	}
 	b := &fakeBrowser{
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), before, after},
+			libraryURL: {before, after},
 			reviewURL:  {reviewBefore, action, reviewAfter},
 		},
 	}
@@ -291,7 +291,7 @@ func setFinishDateOnPages(t *testing.T, beforeHTML, afterHTML string, action *fa
 	reviewHTML := action.html
 	b := &fakeBrowser{
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), libraryTestPage(beforeHTML, pageURL), libraryTestPage(afterHTML, pageURL)},
+			libraryURL: {libraryTestPage(beforeHTML, pageURL), libraryTestPage(afterHTML, pageURL)},
 			reviewURL: {
 				&fakePage{url: reviewURL, html: reviewHTML},
 				action,

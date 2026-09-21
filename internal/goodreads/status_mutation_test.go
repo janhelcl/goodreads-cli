@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
@@ -96,6 +97,34 @@ func TestSetStatusClicksOnceAndVerifiesFreshState(t *testing.T) {
 	}
 }
 
+func TestSetStatusRetriesChooserOpenUntilContractHolds(t *testing.T) {
+	originalWait := chooserRetryWait
+	chooserRetryWait = 20 * time.Millisecond
+	t.Cleanup(func() { chooserRetryWait = originalWait })
+
+	b, action, isbn := statusFlowBrowser(t, domain.StatusRead, domain.StatusCurrentlyReading)
+	clicks := 0
+	action.click = func(selector string) error {
+		clicks++
+		switch {
+		case strings.Contains(selector, "shelfChooserLink"):
+			if clicks >= 2 {
+				action.html = ownerStatusFixture(domain.StatusRead, true)
+			}
+		case strings.Contains(selector, "alt='currently-reading'"):
+			action.html = ownerStatusFixture(domain.StatusCurrentlyReading, false)
+		default:
+			t.Fatalf("unexpected selector %q", selector)
+		}
+		return nil
+	}
+
+	result, err := SetStatus(context.Background(), b, isbn, domain.StatusCurrentlyReading)
+	if err != nil || !result.Verified || clicks != 3 {
+		t.Fatalf("result=%+v err=%v clicks=%d", result, err, clicks)
+	}
+}
+
 func TestSetStatusAlreadySatisfiedDoesNotClick(t *testing.T) {
 	b, action, isbn := statusFlowBrowser(t, domain.StatusRead, domain.StatusRead)
 	action.click = func(string) error {
@@ -174,7 +203,7 @@ func statusFlowBrowser(
 			reviewURL: reviewPage,
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), before, after},
+			libraryURL: {before, after},
 		},
 	}
 	return b, action, isbn

@@ -120,7 +120,7 @@ func TestFinishAlreadySatisfiedDoesNotMutate(t *testing.T) {
 			reviewURL: reviewPage,
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), owner(), privatePage(), owner()},
+			libraryURL: {owner(), owner()},
 		},
 	}
 	result, err := Finish(context.Background(), b, isbn, date, nil)

@@ -32,7 +32,7 @@ func parseShelfPage(raw string) (shelfPage, error) {
 	if doc.Find("#books").Length() != 1 || doc.Find("#booksBody").Length() != 1 ||
 		doc.Find("#books th.field.title").Length() != 1 || doc.Find("#books th.field.author").Length() != 1 ||
 		!recognizedLibraryHeading(doc.Find("h1").First().Text()) || doc.Find(signOutCSS).Length() == 0 {
-		return shelfPage{}, fmt.Errorf("%w at library.page: required table markers missing", ErrCompatibility)
+		return shelfPage{}, fmt.Errorf("%w at library.page: %w", ErrCompatibility, errLibraryTableNotReady)
 	}
 	result := shelfPage{Books: []domain.Book{}}
 	var rowErr error

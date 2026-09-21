@@ -21,9 +21,10 @@ var (
 )
 
 var (
-	ErrCompatibility  = errors.New("goodreads UI changed")
-	ErrSessionExpired = errors.New("goodreads session expired")
-	ErrLoginCancelled = errors.New("goodreads login was cancelled or timed out")
+	ErrCompatibility         = errors.New("goodreads UI changed")
+	ErrSessionExpired        = errors.New("goodreads session expired")
+	ErrLoginCancelled        = errors.New("goodreads login was cancelled or timed out")
+	errPrivateMarkersMissing = errors.New("required markers missing")
 )
 
 type ConnectionStatus struct {
@@ -106,6 +107,39 @@ func Status(ctx context.Context, b browser.Browser) (ConnectionStatus, error) {
 		return ConnectionStatus{}, fmt.Errorf("auth.private-library: %w", err)
 	}
 	defer p.Close()
+	return waitForConnectionStatus(ctx, p)
+}
+
+func waitForConnectionStatus(ctx context.Context, p browser.Page) (ConnectionStatus, error) {
+	readyCtx, cancel := context.WithTimeout(ctx, pageReadyTimeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		state, err := connectionStatusOnce(ctx, p)
+		if err == nil {
+			return state, nil
+		}
+		if !errors.Is(err, errPrivateMarkersMissing) {
+			return ConnectionStatus{}, err
+		}
+		lastErr = err
+		select {
+		case <-readyCtx.Done():
+			if ctx.Err() != nil {
+				return ConnectionStatus{}, ctx.Err()
+			}
+			if lastErr != nil {
+				return ConnectionStatus{}, lastErr
+			}
+			return ConnectionStatus{}, readyCtx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func connectionStatusOnce(ctx context.Context, p browser.Page) (ConnectionStatus, error) {
 	raw, err := p.URL(ctx)
 	if err != nil {
 		return ConnectionStatus{}, fmt.Errorf("auth.private-library: page unavailable: %w", err)
@@ -147,7 +181,7 @@ func Status(ctx context.Context, b browser.Browser) (ConnectionStatus, error) {
 		return ConnectionStatus{}, fmt.Errorf("auth.private-library: body check failed: %w", err)
 	}
 	if !heading || !account || !table || !body {
-		return ConnectionStatus{}, fmt.Errorf("%w at auth.private-library: required markers missing", ErrCompatibility)
+		return ConnectionStatus{}, fmt.Errorf("%w at auth.private-library: %w", ErrCompatibility, errPrivateMarkersMissing)
 	}
 	return ConnectionStatus{Connected: true, SessionValid: true}, nil
 }

@@ -52,13 +52,6 @@ func SetFinishDate(
 		return domain.MutationResult{}, err
 	}
 	wanted := date.Format("2006-01-02")
-	state, err := Status(ctx, b)
-	if err != nil {
-		return domain.MutationResult{}, err
-	}
-	if !state.Connected {
-		return domain.MutationResult{}, ErrSessionExpired
-	}
 	candidate, err := findMutationCandidate(ctx, b, isbn, finishDateStage, false)
 	if err != nil {
 		return domain.MutationResult{}, err
@@ -191,13 +184,6 @@ func ClearFinishDate(
 	b browser.Browser,
 	isbn domain.ISBN,
 ) (domain.MutationResult, error) {
-	state, err := Status(ctx, b)
-	if err != nil {
-		return domain.MutationResult{}, err
-	}
-	if !state.Connected {
-		return domain.MutationResult{}, ErrSessionExpired
-	}
 	candidate, err := findMutationCandidate(ctx, b, isbn, finishDateStage, false)
 	if err != nil {
 		return domain.MutationResult{}, err

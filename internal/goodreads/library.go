@@ -16,11 +16,18 @@ var ErrPageLimit = errors.New("library page scan limit reached")
 var ErrScanIncomplete = errors.New("exact-edition scan incomplete")
 var ErrBookNotFound = errors.New("book ISBN not found in library")
 var ErrBookAmbiguous = errors.New("book ISBN matches multiple library entries")
+var errLibraryTableNotReady = errors.New("required table markers missing")
 
 const (
 	maxListShelfPages  = 10
 	maxExactShelfPages = 100
 )
+
+// pageReadyTimeout bounds how long Status and shelf reads wait for the
+// private library table after NewPage sees a document body. A hanging
+// window.onload must not consume the command deadline, but a brief first
+// paint without #books is not a compatibility failure.
+var pageReadyTimeout = 15 * time.Second
 
 // Library reads rendered Goodreads shelf pages for this invocation only.
 func Library(ctx context.Context, b browser.Browser, filter domain.LibraryFilter) ([]domain.Book, error) {
@@ -125,10 +132,11 @@ func scanShelf(
 }
 
 func readLibraryShelfPage(ctx context.Context, page browser.Page, shelf domain.ReadingStatus) (shelfPage, *url.URL, error) {
+	readyCtx, cancel := context.WithTimeout(ctx, pageReadyTimeout)
+	defer cancel()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
-	var lastHTML string
-	haveHTML := false
+	var lastErr error
 	for {
 		current, err := page.URL(ctx)
 		if err != nil {
@@ -161,17 +169,19 @@ func readLibraryShelfPage(ctx context.Context, page browser.Page, shelf domain.R
 		if parseErr == nil {
 			return parsed, currentURL, nil
 		}
-		if haveHTML && html == lastHTML {
+		if !errors.Is(parseErr, errLibraryTableNotReady) {
 			return shelfPage{}, nil, parseErr
 		}
-		lastHTML = html
-		haveHTML = true
+		lastErr = parseErr
 		select {
-		case <-ctx.Done():
-			if parseErr != nil && ctx.Err() == nil {
-				return shelfPage{}, nil, parseErr
+		case <-readyCtx.Done():
+			if ctx.Err() != nil {
+				return shelfPage{}, nil, ctx.Err()
 			}
-			return shelfPage{}, nil, ctx.Err()
+			if lastErr != nil {
+				return shelfPage{}, nil, lastErr
+			}
+			return shelfPage{}, nil, readyCtx.Err()
 		case <-ticker.C:
 		}
 	}

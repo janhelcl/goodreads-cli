@@ -36,14 +36,9 @@ func Add(
 	if !status.Valid() {
 		return domain.MutationResult{}, domain.ErrInvalidStatus
 	}
-	state, err := Status(ctx, b)
-	if err != nil {
-		return domain.MutationResult{}, err
-	}
-	if !state.Connected {
-		return domain.MutationResult{}, ErrSessionExpired
-	}
-	_, err = findMutationCandidate(ctx, b, isbn, addMutationStage, true)
+	// Session state comes from the owner-library scan; a separate Status page
+	// load must not consume the command deadline before the add or status click.
+	_, err := findMutationCandidate(ctx, b, isbn, addMutationStage, true)
 	switch {
 	case err == nil:
 		result, err := setStatusPreservingFinishDate(ctx, b, isbn, status)

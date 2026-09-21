@@ -78,6 +78,26 @@ func TestLibraryReadsEmptyExclusiveShelf(t *testing.T) {
 	}
 }
 
+func TestLibraryWaitsForTableMarkers(t *testing.T) {
+	pageURL := "https://www.goodreads.com/review/list/123"
+	reads := 0
+	page := &fakePage{
+		url: pageURL,
+		htmlFunc: func() string {
+			reads++
+			if reads < 3 {
+				return `<html><body><h1>Loading</h1></body></html>`
+			}
+			return emptyOwnerLibrary
+		},
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{libraryURL: page}}
+	books, err := Library(context.Background(), b, domain.LibraryFilter{Limit: 20})
+	if err != nil || len(books) != 0 || reads < 3 {
+		t.Fatalf("books=%+v err=%v reads=%d", books, err, reads)
+	}
+}
+
 func TestLibraryTreatsSignInRedirectAsExpired(t *testing.T) {
 	b := &fakeBrowser{pages: map[string]browser.Page{
 		libraryURL: &fakePage{url: signInURL},
@@ -167,6 +187,7 @@ func TestExactResolutionBudgetIsIncompleteAndPreventsAdd(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := exactScanBrowser(maxExactShelfPages+1, nil)
+	b.pagesQueue[libraryURL] = b.pagesQueue[libraryURL][1:]
 	_, err = Add(context.Background(), b, isbn, domain.StatusToRead)
 	if !errors.Is(err, ErrScanIncomplete) {
 		t.Fatalf("expected incomplete scan, got %v", err)

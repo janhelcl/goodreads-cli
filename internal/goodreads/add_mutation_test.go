@@ -161,7 +161,7 @@ func TestAddNewEditionClicksOnceAndVerifiesFreshOwnerRow(t *testing.T) {
 			"https://www.goodreads.com/review/edit/7": review,
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), empty, empty, added},
+			libraryURL: {empty, empty, added},
 		},
 	}
 	result, err := Add(context.Background(), b, isbn, domain.StatusToRead)
@@ -196,7 +196,7 @@ func TestAddExistingEditionUsesOwnerISBNWithoutPublicResolution(t *testing.T) {
 			reviewURL: review,
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), owner(), privatePage(), owner()},
+			libraryURL: {owner(), owner()},
 		},
 	}
 	result, err := Add(context.Background(), b, isbn, domain.StatusRead)
@@ -232,7 +232,7 @@ func TestAddUsesResolvedBookIDWhenOwnerRowHasNoISBN(t *testing.T) {
 			bookURL:   book,
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), owner(), privatePage(), owner()},
+			libraryURL: {owner(), owner()},
 		},
 	}
 	if _, err := Add(context.Background(), b, isbn, domain.StatusToRead); !errors.Is(err, ErrCompatibility) {

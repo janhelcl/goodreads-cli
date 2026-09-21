@@ -2,6 +2,7 @@ package goodreads
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,12 @@ import (
 )
 
 const statusMutationStage = "mutation.status"
+
+var (
+	chooserOpenTimeout = 30 * time.Second
+	chooserRetryWait   = 2 * time.Second
+	errChooserClick    = errors.New("shelf chooser unavailable")
+)
 
 func Start(ctx context.Context, b browser.Browser, isbn domain.ISBN) (domain.MutationResult, error) {
 	result, err := SetStatus(ctx, b, isbn, domain.StatusCurrentlyReading)
@@ -44,13 +51,8 @@ func setStatus(
 	if !status.Valid() {
 		return domain.MutationResult{}, domain.ErrInvalidStatus
 	}
-	state, err := Status(ctx, b)
-	if err != nil {
-		return domain.MutationResult{}, err
-	}
-	if !state.Connected {
-		return domain.MutationResult{}, ErrSessionExpired
-	}
+	// Session state comes from the owner-library scan; a separate Status page
+	// load must not consume the command deadline before the chooser click.
 	candidate, err := findMutationCandidate(ctx, b, isbn, statusMutationStage, true)
 	if err != nil {
 		return domain.MutationResult{}, err
@@ -74,16 +76,11 @@ func setStatus(
 		return verifyStatusMutation(before, before, status, allowFinishDateChange)
 	}
 
-	openSelector := fmt.Sprintf("#%s td.field.shelves a.shelfChooserLink", candidate.RowID)
-	if err := page.Click(ctx, openSelector); err != nil {
+	if err := openStatusChooser(ctx, page, candidate, isbn, before.Status); err != nil {
 		_ = page.Close()
-		return domain.MutationResult{}, fmt.Errorf("%s: shelf chooser unavailable: %w", statusMutationStage, err)
-	}
-	chooserCtx, cancelChooser := context.WithTimeout(ctx, 10*time.Second)
-	err = waitForStatusChooser(chooserCtx, page, candidate, isbn, before.Status)
-	cancelChooser()
-	if err != nil {
-		_ = page.Close()
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, errChooserClick) {
+			return domain.MutationResult{}, err
+		}
 		return domain.MutationResult{}, fmt.Errorf("%w at %s: shelf chooser contract changed (%v)", ErrCompatibility, statusMutationStage, err)
 	}
 
@@ -121,34 +118,50 @@ func setStatus(
 	return domain.MutationResult{}, verifyErr
 }
 
-func waitForStatusChooser(
+func openStatusChooser(
 	ctx context.Context,
 	page browser.Page,
 	candidate ratingCandidate,
 	isbn domain.ISBN,
 	current domain.ReadingStatus,
 ) error {
+	openSelector := fmt.Sprintf("#%s td.field.shelves a.shelfChooserLink", candidate.RowID)
+	chooserCtx, cancel := context.WithTimeout(ctx, chooserOpenTimeout)
+	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
+	var lastClick time.Time
 	for {
-		contractErr := statusChooserContract(ctx, page, candidate, isbn, current)
+		contractErr := statusChooserContract(chooserCtx, page, candidate, isbn, current)
 		if contractErr == nil {
 			return nil
 		}
-		if ctx.Err() != nil {
-			if lastErr != nil {
-				return lastErr
-			}
-			return contractErr
-		}
 		lastErr = contractErr
+		if lastClick.IsZero() || time.Since(lastClick) >= chooserRetryWait {
+			if err := page.Click(chooserCtx, openSelector); err != nil {
+				if chooserCtx.Err() != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					if lastErr != nil {
+						return lastErr
+					}
+					return chooserCtx.Err()
+				}
+				return fmt.Errorf("%s: %w: %v", statusMutationStage, errChooserClick, err)
+			}
+			lastClick = time.Now()
+		}
 		select {
-		case <-ctx.Done():
+		case <-chooserCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if lastErr != nil {
 				return lastErr
 			}
-			return ctx.Err()
+			return chooserCtx.Err()
 		case <-ticker.C:
 		}
 	}

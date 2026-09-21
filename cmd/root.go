@@ -321,7 +321,7 @@ func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRun
 			if err != nil {
 				return err
 			}
-			ctx, cancel := newContext(cmd, 2*time.Minute)
+			ctx, cancel := newContext(cmd, 5*time.Minute)
 			defer cancel()
 			result, err := service.Add(ctx, isbn, status)
 			if err != nil {
@@ -350,7 +350,7 @@ func newRootWithMCP(out, errOut io.Writer, factory serviceFactory, runMCP mcpRun
 			if err != nil {
 				return err
 			}
-			ctx, cancel := newContext(cmd, time.Minute)
+			ctx, cancel := newContext(cmd, 2*time.Minute)
 			defer cancel()
 			result, err := service.Start(ctx, isbn)
 			if err != nil {

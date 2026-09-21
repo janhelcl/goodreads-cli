@@ -246,7 +246,7 @@ func (a *adapter) addBook(
 	if !status.Valid() {
 		return nil, output.Mutation{}, safeError(domain.ErrInvalidStatus)
 	}
-	return a.mutate(ctx, 2*time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
+	return a.mutate(ctx, 5*time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
 		return a.service.Add(ctx, isbn, status)
 	})
 }
@@ -260,7 +260,7 @@ func (a *adapter) startReading(
 	if err != nil {
 		return nil, output.Mutation{}, err
 	}
-	return a.mutate(ctx, time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
+	return a.mutate(ctx, 2*time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
 		return a.service.Start(ctx, isbn)
 	})
 }

@@ -125,6 +125,9 @@ Use event/condition waits for:
 exists. It does not wait for `window.onload` or `document.readyState === "complete"`.
 A hanging image, third-party request, or unfinished HTML stream must not consume
 the operation deadline. Callers then assert page identity from the rendered DOM.
+`Status` and shelf reads wait a bounded time for the private-library table markers
+after that body exists; a brief first paint without `#books` is not compatibility
+drift.
 
 Do not use unbounded waits. Short bounded settling delays MAY be used only when documented and paired with a real state condition.
 
@@ -213,6 +216,16 @@ A click or form submission is not success. An HTTP 2xx observed inside the brows
 The spike must identify the most stable Goodreads control for selecting `to-read`, `currently-reading`, or `read`.
 
 For an existing book, the adapter treats add as ensure-status and preserves unrelated fields. For a new book, it verifies the resulting library entry and exact ISBN.
+
+Session proof is the owner-library scan, not a prior unfiltered `Status` page load.
+Open the owner shelf chooser through the row control and retry that open click
+until the floating exclusive-option contract holds, with a bounded wait. Those
+interaction waits MUST NOT inherit the remaining command deadline as an
+unbounded element wait.
+
+Returning an edition to `read` may create a dated reading session. `add --shelf
+read` MUST restore an unset finish date by removing that extra session after
+ensuring another session row remains, then verify the shelf date is again unset.
 
 ### Rating
 

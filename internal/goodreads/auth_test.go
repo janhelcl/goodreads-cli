@@ -101,6 +101,9 @@ func privatePage() *fakePage {
 }
 
 func TestStatusRequiresPrivatePageAndMarkers(t *testing.T) {
+	original := pageReadyTimeout
+	pageReadyTimeout = 80 * time.Millisecond
+	t.Cleanup(func() { pageReadyTimeout = original })
 	for _, tc := range []struct {
 		name    string
 		page    *fakePage
@@ -121,6 +124,26 @@ func TestStatusRequiresPrivatePageAndMarkers(t *testing.T) {
 				t.Fatalf("status=%+v err=%v; want connected=%v err=%v", got, err, tc.want, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestStatusWaitsForPrivateLibraryMarkers(t *testing.T) {
+	page := privatePage()
+	page.selectors = map[string]bool{}
+	page.text = map[string]bool{}
+	reads := 0
+	page.htmlFunc = func() string {
+		reads++
+		if reads >= 3 {
+			page.selectors = privatePage().selectors
+			page.text = privatePage().text
+		}
+		return "<html><body></body></html>"
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{libraryURL: page}}
+	got, err := Status(context.Background(), b)
+	if err != nil || !got.Connected || !got.SessionValid || reads < 3 {
+		t.Fatalf("status=%+v err=%v reads=%d", got, err, reads)
 	}
 }
 
