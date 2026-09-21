@@ -177,6 +177,82 @@ func rodOwnerFixture(rating int, status domain.ReadingStatus) string {
 	return html
 }
 
+func TestRodRateIgnoresHangingSubresource(t *testing.T) {
+	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
+		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium Goodreads flow test")
+	}
+
+	var stateMu sync.Mutex
+	rating := 2
+	var ratingRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hang.png":
+			<-r.Context().Done()
+			return
+		case "/review/edit/7":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<html><body><form action="/review/edit/7"><textarea id="review_review_usertext" name="review[review]">fixture review</textarea></form><img src="/hang.png"></body></html>`)
+		case "/rating":
+			ratingRequests.Add(1)
+			stateMu.Lock()
+			rating = 4
+			stateMu.Unlock()
+			fmt.Fprint(w, "ok")
+		default:
+			stateMu.Lock()
+			html := rodOwnerFixture(rating, domain.StatusRead)
+			stateMu.Unlock()
+			html = strings.Replace(html, "</body>", `<img src="/hang.png"></body>`, 1)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, html)
+		}
+	}))
+	defer server.Close()
+
+	originalSignIn, originalLibrary := signInURL, libraryURL
+	originalOrigins := append([]string(nil), allowedGoodreadsOrigins...)
+	signInURL = server.URL + "/user/sign_in"
+	libraryURL = server.URL + "/review/list"
+	allowedGoodreadsOrigins = []string{server.URL}
+	originalRatingCompletionTimeout := ratingCompletionTimeout
+	ratingCompletionTimeout = 250 * time.Millisecond
+	t.Cleanup(func() {
+		signInURL = originalSignIn
+		libraryURL = originalLibrary
+		allowedGoodreadsOrigins = originalOrigins
+		ratingCompletionTimeout = originalRatingCompletionTimeout
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	origin, _ := url.Parse(server.URL)
+	b, err := (browser.RodFactory{}).Launch(ctx, browser.LaunchOptions{
+		ProfileDir:     paths.Browser,
+		Headless:       true,
+		AllowedOrigins: []string{origin.Scheme + "://" + origin.Host},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	started := time.Now()
+	result, err := Rate(ctx, b, isbn, 4)
+	elapsed := time.Since(started)
+	if err != nil || !result.Verified || result.After.Rating != 4 || ratingRequests.Load() != 1 {
+		t.Fatalf("rating result=%+v err=%v requests=%d", result, err, ratingRequests.Load())
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("rate waited for hanging image: %s", elapsed)
+	}
+}
+
 func TestRodEmptyExclusiveShelfIgnoresHangingSubresource(t *testing.T) {
 	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
 		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium Goodreads flow test")

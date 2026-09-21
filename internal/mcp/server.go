@@ -303,7 +303,7 @@ func (a *adapter) rateBook(
 	if err := domain.ValidateRating(input.Rating); err != nil {
 		return nil, output.Mutation{}, safeError(err)
 	}
-	return a.mutate(ctx, time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
+	return a.mutate(ctx, 2*time.Minute, isbn, func(ctx context.Context) (domain.MutationResult, error) {
 		return a.service.Rate(ctx, isbn, input.Rating)
 	})
 }

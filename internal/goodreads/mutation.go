@@ -50,20 +50,19 @@ var ratingTitles = map[int]string{
 	5: "it was amazing",
 }
 
-var ratingCompletionTimeout = 10 * time.Second
+var (
+	ratingControlTimeout    = 15 * time.Second
+	ratingRequestTimeout    = 15 * time.Second
+	ratingCompletionTimeout = 10 * time.Second
+)
 
 // Rate changes one exact rendered edition through the owner shelf's rating
 // control, then reloads all preservation fields before reporting success.
+// Session state comes from the owner-library scan; a separate Status page
+// load must not consume the command deadline before the click.
 func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) (domain.MutationResult, error) {
 	if err := domain.ValidateRating(rating); err != nil {
 		return domain.MutationResult{}, err
-	}
-	state, err := Status(ctx, b)
-	if err != nil {
-		return domain.MutationResult{}, err
-	}
-	if !state.Connected {
-		return domain.MutationResult{}, ErrSessionExpired
 	}
 	candidate, err := findRatingCandidate(ctx, b, isbn)
 	if err != nil {
@@ -87,8 +86,19 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 		_ = page.Close()
 		return VerifyRatingMutation(before, before, rating)
 	}
-	selector := fmt.Sprintf("#%s td.field.rating div.stars[data-rating] a.star[title='%s']", candidate.RowID, ratingTitles[rating])
-	clickErr := page.Click(ctx, selector)
+	controlCtx, cancelControl := context.WithTimeout(ctx, ratingControlTimeout)
+	err = waitForRatingControl(controlCtx, page, candidate, isbn, rating)
+	cancelControl()
+	if err != nil {
+		_ = page.Close()
+		if ctx.Err() != nil {
+			return domain.MutationResult{}, ctx.Err()
+		}
+		return domain.MutationResult{}, fmt.Errorf("%w at mutation.rating: rating control unavailable (%v)", ErrCompatibility, err)
+	}
+	requestCtx, cancelRequest := context.WithTimeout(ctx, ratingRequestTimeout)
+	clickErr := page.ClickAndWaitForRequest(requestCtx, ratingStarSelector(candidate, rating))
+	cancelRequest()
 	var completionErr error
 	if clickErr == nil {
 		completionCtx, cancel := context.WithTimeout(ctx, ratingCompletionTimeout)
@@ -208,6 +218,9 @@ func scanOwnedCandidates(
 		}
 		visited[target.String()] = true
 		page, err := b.NewPage(ctx, target.String())
+		if errors.Is(err, browser.ErrOrigin) {
+			return ratingCandidate{}, 0, nil, false, nil, ErrSessionExpired
+		}
 		if err != nil {
 			return ratingCandidate{}, 0, nil, false, nil, fmt.Errorf("book.resolve: navigation failed: %w", err)
 		}
@@ -398,6 +411,53 @@ func mutationBookOnPage(
 		return domain.Book{}, fmt.Errorf("%w at %s: target identity changed", ErrCompatibility, stage)
 	}
 	return book, nil
+}
+
+func ratingStarSelector(candidate ratingCandidate, rating int) string {
+	return fmt.Sprintf(
+		"#%s td.field.rating div.stars[data-rating] a.star[title='%s']",
+		candidate.RowID,
+		ratingTitles[rating],
+	)
+}
+
+func waitForRatingControl(ctx context.Context, page browser.Page, candidate ratingCandidate, isbn domain.ISBN, rating int) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		err := ratingControlReady(ctx, page, candidate, isbn, rating)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return lastErr
+			}
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func ratingControlReady(ctx context.Context, page browser.Page, candidate ratingCandidate, isbn domain.ISBN, rating int) error {
+	if _, err := ratingBookOnPage(ctx, page, candidate, isbn); err != nil {
+		return err
+	}
+	raw, err := page.HTML(ctx)
+	if err != nil {
+		return fmt.Errorf("target DOM unavailable: %w", err)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("invalid target DOM")
+	}
+	if doc.Find(ratingStarSelector(candidate, rating)).Length() != 1 {
+		return fmt.Errorf("target rating control missing")
+	}
+	return nil
 }
 
 func waitForRating(ctx context.Context, page browser.Page, candidate ratingCandidate, isbn domain.ISBN, rating int) error {

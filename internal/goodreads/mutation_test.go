@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
@@ -107,6 +108,9 @@ func TestRateClicksOnceAndVerifiesFreshState(t *testing.T) {
 	if err != nil || !result.Verified || result.Before.Rating != 2 || result.After.Rating != 4 || clicks != 1 {
 		t.Fatalf("result=%+v err=%v clicks=%d calls=%v", result, err, clicks, b.calls)
 	}
+	if n := countCalls(b.calls, libraryURL); n != 2 {
+		t.Fatalf("rate loaded library %d times; want scan+readback only: %v", n, b.calls)
+	}
 }
 
 func TestRateAlreadySatisfiedDoesNotClick(t *testing.T) {
@@ -134,6 +138,37 @@ func TestRateDoesNotReplayAmbiguousClick(t *testing.T) {
 	}
 }
 
+func TestRateTreatsSignInRedirectAsExpired(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		libraryURL: &fakePage{url: signInURL},
+	}}
+	_, err = Rate(context.Background(), b, isbn, 4)
+	if !errors.Is(err, ErrSessionExpired) || len(b.calls) != 1 {
+		t.Fatalf("err=%v calls=%v", err, b.calls)
+	}
+}
+
+func TestRateMissingInteractiveStarsIsCompatibility(t *testing.T) {
+	b, action, isbn := ratingFlowBrowser(t, 2, 4)
+	action.html = strings.ReplaceAll(ownerRatingFixture(2), `<a class="star off"`, `<span class="star off"`)
+	clicks := 0
+	action.click = func(string) error {
+		clicks++
+		return nil
+	}
+	original := ratingControlTimeout
+	ratingControlTimeout = 200 * time.Millisecond
+	defer func() { ratingControlTimeout = original }()
+	_, err := Rate(context.Background(), b, isbn, 4)
+	if !errors.Is(err, ErrCompatibility) || clicks != 0 {
+		t.Fatalf("err=%v clicks=%d calls=%v", err, clicks, b.calls)
+	}
+}
+
 func ratingFlowBrowser(t *testing.T, beforeRating, readbackRating int) (*fakeBrowser, *fakePage, domain.ISBN) {
 	t.Helper()
 	isbn, err := domain.NormalizeISBN("9780306406157")
@@ -155,10 +190,20 @@ func ratingFlowBrowser(t *testing.T, beforeRating, readbackRating int) (*fakeBro
 			reviewURL: reviewPage,
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), before, after},
+			libraryURL: {before, after},
 		},
 	}
 	return b, action, isbn
+}
+
+func countCalls(calls []string, target string) int {
+	n := 0
+	for _, call := range calls {
+		if call == target {
+			n++
+		}
+	}
+	return n
 }
 
 func ownerRatingFixture(rating int) string {

@@ -216,7 +216,13 @@ For an existing book, the adapter treats add as ensure-status and preserves unre
 
 ### Rating
 
-Select the exact numeric rating through the user-facing rating control. Verify the numeric value after reload. Do not infer success from star hover/visual classes alone unless the parser contract proves them stable.
+Select the exact numeric rating through the owner-shelf star control. Session
+proof is the owner-library scan, not a prior unfiltered `Status` page load.
+Wait until the scoped star control is present, click it, and wait for its
+browser-initiated request before one fresh readback. Those interaction waits
+are bounded; they MUST NOT inherit the remaining command deadline as a Rod
+element wait. Verify the numeric value after reload. Do not infer success from
+star hover/visual classes alone unless the parser contract proves them stable.
 
 ### Review
 
