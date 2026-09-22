@@ -172,6 +172,75 @@ func TestLoginCompletesFreshInteractivePath(t *testing.T) {
 	}
 }
 
+func TestLoginDoesNotOpenLibraryTabUntilSignInTabLooksAuthenticated(t *testing.T) {
+	for _, raw := range []string{
+		"https://www.goodreads.com/user/sign_in",
+		"https://www.goodreads.com/ap/signin",
+		"https://www.goodreads.com/",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			b := &fakeBrowser{pages: map[string]browser.Page{
+				signInURL:  &fakePage{url: raw},
+				libraryURL: &fakePage{url: signInURL},
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+			defer cancel()
+			if _, err := Login(ctx, b); !errors.Is(err, ErrLoginCancelled) {
+				t.Fatalf("login err=%v", err)
+			}
+			if len(b.calls) != 2 || b.calls[0] != libraryURL || b.calls[1] != signInURL {
+				t.Fatalf("calls=%v", b.calls)
+			}
+		})
+	}
+}
+
+func TestLoginOpensLibraryTabOnceAfterProviderSignInAuthenticates(t *testing.T) {
+	page := &loginWatchPage{
+		step: -1,
+		urls: []string{
+			"https://www.goodreads.com/user/sign_in",
+			"https://www.goodreads.com/ap/signin",
+			"https://www.goodreads.com/",
+		},
+		signOut: []bool{false, false, true},
+	}
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{signInURL: page},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {&fakePage{url: signInURL}, privatePage()},
+		},
+	}
+	got, err := Login(context.Background(), b)
+	if err != nil || !got.Connected || !got.SessionValid {
+		t.Fatalf("login=%+v err=%v", got, err)
+	}
+	if len(b.calls) != 3 || b.calls[0] != libraryURL || b.calls[1] != signInURL || b.calls[2] != libraryURL {
+		t.Fatalf("calls=%v", b.calls)
+	}
+}
+
+type loginWatchPage struct {
+	fakePage
+	step    int
+	urls    []string
+	signOut []bool
+}
+
+func (p *loginWatchPage) URL(context.Context) (string, error) {
+	if p.step < len(p.urls)-1 {
+		p.step++
+	}
+	return p.urls[p.step], nil
+}
+
+func (p *loginWatchPage) Has(_ context.Context, selector string) (bool, error) {
+	if selector == signOutCSS && p.step >= 0 && p.step < len(p.signOut) {
+		return p.signOut[p.step], nil
+	}
+	return p.selectors[selector], nil
+}
+
 func TestLoginVerifiesPrivatePage(t *testing.T) {
 	b := &fakeBrowser{pages: map[string]browser.Page{
 		signInURL:  &fakePage{url: "https://www.goodreads.com/", selectors: map[string]bool{signOutCSS: true}},

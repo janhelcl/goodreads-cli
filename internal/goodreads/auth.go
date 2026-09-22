@@ -34,6 +34,9 @@ type ConnectionStatus struct {
 
 // Login waits for the user to complete sign-in in the headed browser. It never
 // reads or interacts with credential fields, then validates a private page.
+// Provider pages such as /ap/signin stay user-controlled, so the wait loop
+// observes the sign-in tab and opens /review/list only after that tab shows an
+// account marker or the private library.
 func Login(ctx context.Context, b browser.Browser) (ConnectionStatus, error) {
 	// A saved session can redirect the sign-in URL to a home page whose header
 	// differs from the private library. Validate the private page first.
@@ -73,8 +76,7 @@ func Login(ctx context.Context, b browser.Browser) (ConnectionStatus, error) {
 				}
 				return ConnectionStatus{}, fmt.Errorf("auth.page: account marker unavailable: %w", err)
 			}
-			u, _ := url.Parse(raw)
-			if !strings.HasPrefix(u.Path, "/user/sign_in") &&
+			if signInTabReadyToValidate(raw, found) &&
 				(raw != lastCheckedURL || time.Since(lastCheck) >= 5*time.Second || (found && !accountSeen)) {
 				state, err := Status(ctx, b)
 				if err != nil {
@@ -154,7 +156,7 @@ func connectionStatusOnce(ctx context.Context, p browser.Page) (ConnectionStatus
 	if knownRemoteFailurePath(u.Path) {
 		return ConnectionStatus{}, fmt.Errorf("%w at auth.private-library", browser.ErrNetwork)
 	}
-	if u.Path != "/review/list" && !strings.HasPrefix(u.Path, "/review/list/") {
+	if !privateLibraryPath(u.Path) {
 		return ConnectionStatus{}, fmt.Errorf("%w at auth.private-library: unexpected page", ErrCompatibility)
 	}
 	html, err := p.HTML(ctx)
@@ -216,6 +218,24 @@ func remoteFailureDocument(raw string) bool {
 		return true
 	})
 	return failed
+}
+
+func signInTabReadyToValidate(raw string, hasSignOut bool) bool {
+	if !isGoodreadsPage(raw) {
+		return false
+	}
+	if hasSignOut {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return privateLibraryPath(u.Path)
+}
+
+func privateLibraryPath(path string) bool {
+	return path == "/review/list" || strings.HasPrefix(path, "/review/list/")
 }
 
 func isGoodreadsPage(raw string) bool {

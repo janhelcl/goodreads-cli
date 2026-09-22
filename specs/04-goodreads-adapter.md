@@ -70,7 +70,11 @@ Requirements:
 - MUST allow the user to interact with any login flow Goodreads presents;
 - MUST use a bounded, cancellable login timeout;
 - MUST distinguish cancellation, timeout, browser exit, and compatibility drift;
-- MUST leave no half-created success marker outside the browser profile.
+- MUST leave no half-created success marker outside the browser profile;
+- MUST NOT open a disposable private-library tab while the visible tab is
+  still on a sign-in or identity-provider page such as `/user/sign_in` or
+  `/ap/signin`. Detect success from the sign-in tab, then validate the
+  private library once.
 
 A CAPTCHA or provider challenge is completed manually in the headed window. The application never attempts to defeat it.
 
@@ -83,6 +87,11 @@ Validation SHOULD combine:
 - final origin/URL is an expected Goodreads page rather than sign-in;
 - a stable authenticated navigation/account marker is present;
 - a private library page loads without redirecting to login.
+
+Do not infer login success from "the path is not `/user/sign_in`".
+Amazon/Goodreads sign-in uses `/ap/signin` and similar provider paths.
+While waiting, observe the headed sign-in tab for the account marker or
+the private library, then open `/review/list` once.
 
 If markers disagree, return `ErrCompatibility` or `ErrSessionExpired`; do not guess.
 

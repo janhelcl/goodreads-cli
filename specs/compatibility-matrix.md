@@ -13,7 +13,13 @@ restore, public `finish --date` for a non-today day, export, and MCP. Public
 results were snapshotted before `/book/show/` links appeared; a live `addprobe`
 on the same session found the edition. Interactive login also opened and closed
 a second `/review/list` tab whenever the sign-in URL was not exactly
-`/user/sign_in`. The earlier saved-session run is
+`/user/sign_in`. After Login waited for an account marker or the private
+library on the sign-in tab before calling `Status`, a fresh headed
+`logout` then `login --json --debug` on this session returned connected
+in about 21 seconds with no flashing `/review/list` tab during
+`/ap/signin`. Unit tests on `/ap/signin` and an unauthenticated home
+page opened `/review/list` only for the initial saved-session check.
+The earlier saved-session run is
 [uat-2026-09-20.md](uat-2026-09-20.md).
 
 | Stage | Platform/browser | Evidence | Result |
@@ -23,7 +29,7 @@ a second `/review/list` tab whenever the sign-in URL was not exactly
 | Cancellation and shutdown | Same | local Rod component test cancels the operation and waits for Chrome to exit | Pass |
 | Browser product pinning | Same | test refuses a different Chromium product for an existing profile and clears the marker with profile deletion | Pass |
 | Profile isolation and lock | Linux, `gofrs/flock` v0.13.0 | unit test uses a dedicated temporary profile, verifies permissions, cross-process lock refusal/release, repeat deletion, and symlink refusal | Pass |
-| Headed launch, manual sign-in, and saved profile restart | Linux x86-64, Chrome 143.0.7499.40, visible display | The 2026-09-22 UAT deleted the dedicated profile with `gr logout`, then completed a fresh headed `gr login --json` in about 157 seconds. A later headless `status` reached the private library. During sign-in, `Login` opened and closed a second `/review/list` tab whenever the visible path was not `/user/sign_in` (for example `/ap/signin`). | Pass for this machine/account. Fresh interactive login works; the extra status tab is a UX defect |
+| Headed launch, manual sign-in, and saved profile restart | Linux x86-64, Chrome 143.0.7499.40, visible display | The 2026-09-22 UAT deleted the dedicated profile with `gr logout`, then completed a fresh headed `gr login --json` in about 157 seconds. A later headless `status` reached the private library. During sign-in, `Login` opened and closed a second `/review/list` tab whenever the visible path was not `/user/sign_in` (for example `/ap/signin`). After Login waited for an account marker or the private library on the sign-in tab before calling `Status`, a later `logout` then headed `login --json --debug` on this session returned connected in about 21 seconds with no flashing library tab; a new-process headless `status` was connected and left no profile Chrome. | Pass for this machine/account. Fresh interactive login works, including Amazon/Goodreads `/ap/signin` without a second tab |
 | Authentication detection | Same | Saved profile reached `/review/list/{account}` with exact `My Books` heading, `#books`, `#booksBody`, and sign-out link; a fresh profile was redirected to `/user/sign_in` without these markers. The 2026-09-22 UAT: `logout` removed the profile and made `status` disconnected; `library`/`get` returned exit 3; fresh `login --json` and a new-process `status --json` were connected; existing-session `login --json` returned connected in about two seconds without another sign-in | Pass for logout, fresh login, saved-session detection, and existing-session `login` |
 | Empty private shelf | Same | Authenticated `#books` and `#booksBody` table had zero rows; live `gr library --json --limit 2` and `gr library --shelf currently-reading --json --limit 2` returned `[]`. The 2026-09-20 UAT also saw the empty `currently-reading` shelf hit the one-minute default timeout twice (CLI exit 6 and MCP `timeout`) before later retries returned `[]` in about four seconds. After `NewPage` stopped waiting for `window.onload` and library reads stopped loading the unfiltered library first, a local Chromium fixture with a never-completing image still returned an empty exclusive shelf, and three live `library --shelf currently-reading --json` retries on this session returned `[]` in about two seconds. | Pass for empty shelves, including empty `currently-reading` under the default timeout |
 | Populated shelf structure | Same | Three owner rows established `div.stars[data-rating]`, five semantic star links, review-edit links, editable date wrappers, core/custom shelf links, and filtered headings such as `My Books: Read (2)`; unfiltered, `read`, and empty `currently-reading` reads passed live | Pass for owner rows and filtered/empty shelf reads; populated pagination remains synthetic |
