@@ -344,19 +344,6 @@ func libraryContainsBookID(ctx context.Context, b browser.Browser, bookID string
 	return found, err
 }
 
-func setStatusPreservingFinishDate(
-	ctx context.Context,
-	b browser.Browser,
-	isbn domain.ISBN,
-	status domain.ReadingStatus,
-) (domain.MutationResult, error) {
-	candidate, err := findMutationCandidate(ctx, b, isbn, addMutationStage, true)
-	if err != nil {
-		return domain.MutationResult{}, err
-	}
-	return setStatusPreservingFinishDateUsingCandidate(ctx, b, isbn, status, candidate)
-}
-
 func setStatusPreservingFinishDateUsingCandidate(
 	ctx context.Context,
 	b browser.Browser,
