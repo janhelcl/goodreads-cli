@@ -26,13 +26,6 @@ func Review(
 	if review == nil {
 		return domain.MutationResult{}, domain.ErrInvalidReview
 	}
-	state, err := Status(ctx, b)
-	if err != nil {
-		return domain.MutationResult{}, err
-	}
-	if !state.Connected {
-		return domain.MutationResult{}, ErrSessionExpired
-	}
 	candidate, err := findMutationCandidate(ctx, b, isbn, reviewMutationStage, false)
 	if err != nil {
 		return domain.MutationResult{}, err
@@ -96,7 +89,7 @@ func Review(
 	}
 	_ = page.Close()
 
-	afterCandidate, readbackErr := findMutationCandidate(ctx, b, isbn, reviewMutationStage, false)
+	afterCandidate, readbackErr := readbackMutationCandidate(ctx, b, isbn, candidate, reviewMutationStage, false)
 	if readbackErr != nil {
 		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
 	}

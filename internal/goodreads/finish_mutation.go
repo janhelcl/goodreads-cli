@@ -26,12 +26,57 @@ func Finish(
 			return domain.MutationResult{}, err
 		}
 	}
-	return finishWithOperations(ctx, b, isbn, date, rating, finishOperations{
-		setStatus: setStatus,
-		setDate:   SetFinishDate,
-		rate:      Rate,
-		reconcile: reconcileCompoundFailure,
-	})
+	candidate, err := findMutationCandidate(ctx, b, isbn, statusMutationStage, true)
+	if err != nil {
+		return domain.MutationResult{}, err
+	}
+	return finishResolved(ctx, b, isbn, date, rating, candidate)
+}
+
+func finishResolved(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	date time.Time,
+	rating *int,
+	candidate ratingCandidate,
+) (domain.MutationResult, error) {
+	completed := []string{}
+	statusResult, candidate, err := setStatusResolved(
+		ctx, b, isbn, domain.StatusRead, true, candidate,
+	)
+	if err != nil {
+		return domain.MutationResult{}, err
+	}
+	if statusChanged(statusResult) {
+		completed = append(completed, "status")
+	}
+	before := statusResult.Before
+
+	dateResult, err := setFinishDateUsingCandidate(ctx, b, isbn, date, candidate)
+	if err != nil {
+		return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "finish", completed, "date", err)
+	}
+	candidate.Book = dateResult.After
+	if dateChanged(dateResult) {
+		completed = append(completed, "date")
+	}
+	after := dateResult.After
+	if rating != nil {
+		ratingResult, _, rateErr := rateResolved(ctx, b, isbn, *rating, candidate)
+		if rateErr != nil {
+			return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "finish", completed, "rating", rateErr)
+		}
+		if ratingChanged(ratingResult) {
+			completed = append(completed, "rating")
+		}
+		after = ratingResult.After
+	}
+	result, err := VerifyFinishMutation(before, after, date.Format("2006-01-02"), rating)
+	if err != nil {
+		return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "finish", completed, "verify", err)
+	}
+	return result, nil
 }
 
 type finishOperations struct {

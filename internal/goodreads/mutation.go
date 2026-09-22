@@ -17,6 +17,7 @@ import (
 var (
 	ErrMutationAmbiguous  = errors.New("goodreads mutation result is ambiguous")
 	ErrVerificationFailed = errors.New("goodreads mutation verification failed")
+	errCandidateMoved     = errors.New("goodreads candidate moved from its resolved page")
 )
 
 type VerificationError struct {
@@ -68,23 +69,36 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 	if err != nil {
 		return domain.MutationResult{}, err
 	}
+	result, _, err := rateResolved(ctx, b, isbn, rating, candidate)
+	return result, err
+}
+
+func rateResolved(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	rating int,
+	candidate ratingCandidate,
+) (domain.MutationResult, ratingCandidate, error) {
 	page, err := b.NewPage(ctx, candidate.PageURL)
 	if err != nil {
-		return domain.MutationResult{}, fmt.Errorf("mutation.rating: target page unavailable: %w", err)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("mutation.rating: target page unavailable: %w", err)
 	}
 	before, err := ratingBookOnPage(ctx, page, candidate, isbn)
 	if err != nil {
 		_ = page.Close()
-		return domain.MutationResult{}, err
+		return domain.MutationResult{}, ratingCandidate{}, err
 	}
 	before.Review, err = loadFullReview(ctx, b, candidate.ReviewURL, "mutation.rating")
 	if err != nil {
 		_ = page.Close()
-		return domain.MutationResult{}, err
+		return domain.MutationResult{}, ratingCandidate{}, err
 	}
+	candidate.Book = before
 	if before.Rating == rating {
 		_ = page.Close()
-		return VerifyRatingMutation(before, before, rating)
+		result, verifyErr := VerifyRatingMutation(before, before, rating)
+		return result, candidate, verifyErr
 	}
 	controlCtx, cancelControl := context.WithTimeout(ctx, ratingControlTimeout)
 	err = waitForRatingControl(controlCtx, page, candidate, isbn, rating)
@@ -92,9 +106,9 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 	if err != nil {
 		_ = page.Close()
 		if ctx.Err() != nil {
-			return domain.MutationResult{}, ctx.Err()
+			return domain.MutationResult{}, ratingCandidate{}, ctx.Err()
 		}
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.rating: rating control unavailable (%v)", ErrCompatibility, err)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at mutation.rating: rating control unavailable (%v)", ErrCompatibility, err)
 	}
 	requestCtx, cancelRequest := context.WithTimeout(ctx, ratingRequestTimeout)
 	clickErr := page.ClickAndWaitForRequest(requestCtx, ratingStarSelector(candidate, rating))
@@ -107,23 +121,24 @@ func Rate(ctx context.Context, b browser.Browser, isbn domain.ISBN, rating int) 
 	}
 	_ = page.Close()
 
-	afterCandidate, readbackErr := findRatingCandidate(ctx, b, isbn)
+	afterCandidate, readbackErr := readbackMutationCandidate(ctx, b, isbn, candidate, "mutation.rating", false)
 	if readbackErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
 	}
 	after := afterCandidate.Book
 	after.Review, readbackErr = loadFullReview(ctx, b, afterCandidate.ReviewURL, "mutation.rating")
 	if readbackErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable", ErrMutationAmbiguous)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable", ErrMutationAmbiguous)
 	}
+	afterCandidate.Book = after
 	result, verifyErr := VerifyRatingMutation(before, after, rating)
 	if verifyErr == nil {
-		return result, nil
+		return result, afterCandidate, nil
 	}
 	if clickErr != nil || completionErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.rating: completion unknown", ErrMutationAmbiguous)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at mutation.rating: completion unknown", ErrMutationAmbiguous)
 	}
-	return domain.MutationResult{}, verifyErr
+	return domain.MutationResult{}, ratingCandidate{}, verifyErr
 }
 
 func findRatingCandidate(ctx context.Context, b browser.Browser, isbn domain.ISBN) (ratingCandidate, error) {
@@ -202,7 +217,7 @@ func scanOwnedCandidates(
 	stage string,
 	requireShelfChooser bool,
 ) (ratingCandidate, int, map[string]int, bool, map[string]ratingCandidate, error) {
-	target, _ := url.Parse(libraryURL)
+	target := shelfTarget("", exactShelfPageSize)
 	visited := map[string]bool{}
 	var found ratingCandidate
 	matches := 0
@@ -278,12 +293,76 @@ func scanOwnedCandidates(
 			return ratingCandidate{}, 0, nil, false, nil, fmt.Errorf("%w at book.resolve: invalid next link", ErrCompatibility)
 		}
 		target = currentURL.ResolveReference(next)
+		currentScope := paginationScopeWithPageSize(currentURL, exactShelfPageSize)
+		target = paginationScopeWithPageSize(target, exactShelfPageSize)
 		if !isGoodreadsPage(target.String()) || target.Path != currentURL.Path ||
-			!samePaginationScope(currentURL, target) {
+			!samePaginationScope(currentScope, target) {
 			return ratingCandidate{}, 0, nil, false, nil, fmt.Errorf("%w at book.resolve: next link left shelf", ErrCompatibility)
 		}
 	}
 	return ratingCandidate{}, 0, nil, false, nil, ErrScanIncomplete
+}
+
+// readbackMutationCandidate re-opens the exact page and row established by
+// the terminating owner-library scan. Goodreads may re-order a row after a
+// shelf mutation, so a missing known row falls back to the full exact scan.
+// No candidate data survives the current command.
+func readbackMutationCandidate(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	known ratingCandidate,
+	stage string,
+	requireShelfChooser bool,
+) (ratingCandidate, error) {
+	candidate, err := mutationCandidateOnKnownPage(ctx, b, isbn, known, stage, requireShelfChooser)
+	if !errors.Is(err, errCandidateMoved) {
+		return candidate, err
+	}
+	return findMutationCandidate(ctx, b, isbn, stage, requireShelfChooser)
+}
+
+func mutationCandidateOnKnownPage(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	known ratingCandidate,
+	stage string,
+	requireShelfChooser bool,
+) (ratingCandidate, error) {
+	page, err := b.NewPage(ctx, known.PageURL)
+	if errors.Is(err, browser.ErrOrigin) {
+		return ratingCandidate{}, ErrSessionExpired
+	}
+	if err != nil {
+		return ratingCandidate{}, fmt.Errorf("%s: readback page unavailable: %w", stage, err)
+	}
+	_, currentURL, err := readLibraryShelfPage(ctx, page, "")
+	if err != nil {
+		_ = page.Close()
+		return ratingCandidate{}, err
+	}
+	raw, err := page.HTML(ctx)
+	_ = page.Close()
+	if err != nil {
+		return ratingCandidate{}, fmt.Errorf("%s: readback DOM unavailable: %w", stage, err)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(raw))
+	if err != nil {
+		return ratingCandidate{}, fmt.Errorf("%w at %s: invalid readback DOM", ErrCompatibility, stage)
+	}
+	row := doc.Find("#" + known.RowID)
+	if row.Length() != 1 {
+		return ratingCandidate{}, errCandidateMoved
+	}
+	book, err := parseShelfRow(row)
+	if err != nil {
+		return ratingCandidate{}, err
+	}
+	if !exactISBN(book, isbn) || book.BookID != known.Book.BookID {
+		return ratingCandidate{}, errCandidateMoved
+	}
+	return candidateFromRow(currentURL, row, book, stage, requireShelfChooser)
 }
 
 func candidateFromRow(

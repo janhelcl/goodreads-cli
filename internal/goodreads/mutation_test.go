@@ -108,8 +108,8 @@ func TestRateClicksOnceAndVerifiesFreshState(t *testing.T) {
 	if err != nil || !result.Verified || result.Before.Rating != 2 || result.After.Rating != 4 || clicks != 1 {
 		t.Fatalf("result=%+v err=%v clicks=%d calls=%v", result, err, clicks, b.calls)
 	}
-	if n := countCalls(b.calls, libraryURL); n != 2 {
-		t.Fatalf("rate loaded library %d times; want scan+readback only: %v", n, b.calls)
+	if n := countCalls(b.calls, shelfTarget("", exactShelfPageSize).String()); n != 1 {
+		t.Fatalf("rate ran %d terminating scans; want one: %v", n, b.calls)
 	}
 }
 
@@ -122,6 +122,38 @@ func TestRateAlreadySatisfiedDoesNotClick(t *testing.T) {
 	result, err := Rate(context.Background(), b, isbn, 4)
 	if err != nil || !result.Verified {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestMutationReadbackFallsBackWhenKnownRowMoved(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pageURL = "https://www.goodreads.com/review/list/123"
+	before := libraryTestPage(ownerRatingFixture(2), pageURL)
+	after := libraryTestPage(ownerRatingFixture(4), pageURL)
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{
+			pageURL: libraryTestPage(emptyOwnerLibrary, pageURL),
+		},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {before, after},
+		},
+	}
+	candidate, err := findRatingCandidate(context.Background(), b, isbn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readback, err := readbackMutationCandidate(
+		context.Background(), b, isbn, candidate, "mutation.rating", false,
+	)
+	if err != nil || readback.Book.Rating != 4 {
+		t.Fatalf("readback=%+v err=%v calls=%v", readback, err, b.calls)
+	}
+	if countCalls(b.calls, shelfTarget("", exactShelfPageSize).String()) != 2 ||
+		countCalls(b.calls, pageURL) != 1 {
+		t.Fatalf("known-page fallback calls=%v", b.calls)
 	}
 }
 
@@ -185,12 +217,10 @@ func ratingFlowBrowser(t *testing.T, beforeRating, readbackRating int) (*fakeBro
 		html: `<form><textarea id="review_review_usertext" name="review[review]"></textarea></form>`,
 	}
 	b := &fakeBrowser{
-		pages: map[string]browser.Page{
-			pageURL:   action,
-			reviewURL: reviewPage,
-		},
+		pages: map[string]browser.Page{reviewURL: reviewPage},
 		pagesQueue: map[string][]browser.Page{
 			libraryURL: {before, after},
+			pageURL:   {action, after},
 		},
 	}
 	return b, action, isbn

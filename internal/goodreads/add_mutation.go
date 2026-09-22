@@ -38,10 +38,10 @@ func Add(
 	}
 	// Session state comes from the owner-library scan; a separate Status page
 	// load must not consume the command deadline before the add or status click.
-	_, err := findMutationCandidate(ctx, b, isbn, addMutationStage, true)
+	existing, err := findMutationCandidate(ctx, b, isbn, addMutationStage, true)
 	switch {
 	case err == nil:
-		result, err := setStatusPreservingFinishDate(ctx, b, isbn, status)
+		result, err := setStatusPreservingFinishDateUsingCandidate(ctx, b, isbn, status, existing)
 		if err != nil {
 			return domain.MutationResult{}, err
 		}
@@ -102,10 +102,22 @@ func Add(
 	if status == domain.StatusToRead {
 		return toReadResult, nil
 	}
-	return completeNewAdd(ctx, b, isbn, status, addOperations{
-		setStatus: setStatusPreservingFinishDate,
-		reconcile: reconcileCompoundFailure,
-	})
+	completed := []string{"add"}
+	statusResult, err := setStatusPreservingFinishDateUsingCandidate(ctx, b, isbn, status, added)
+	if err != nil {
+		if errors.Is(err, domain.ErrPartialMutation) {
+			return domain.MutationResult{}, prependPartialStep(err, "add")
+		}
+		return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "add", completed, "status", err)
+	}
+	if statusChanged(statusResult) {
+		completed = append(completed, "status")
+	}
+	result, err := VerifyAddMutation(domain.Book{}, statusResult.After, status, false)
+	if err != nil {
+		return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "add", completed, "verify", err)
+	}
+	return result, nil
 }
 
 type addOperations struct {
@@ -322,7 +334,7 @@ func lookupPublicBookID(ctx context.Context, b browser.Browser, isbn domain.ISBN
 
 func libraryContainsBookID(ctx context.Context, b browser.Browser, bookID string) (bool, error) {
 	found := false
-	err := scanShelf(ctx, b, "", maxExactShelfPages, ErrScanIncomplete, func(book domain.Book) bool {
+	err := scanShelf(ctx, b, "", exactShelfPageSize, maxExactShelfPages, ErrScanIncomplete, func(book domain.Book) bool {
 		if book.BookID == bookID {
 			found = true
 			return true
@@ -338,10 +350,25 @@ func setStatusPreservingFinishDate(
 	isbn domain.ISBN,
 	status domain.ReadingStatus,
 ) (domain.MutationResult, error) {
-	if status != domain.StatusRead {
-		return SetStatus(ctx, b, isbn, status)
+	candidate, err := findMutationCandidate(ctx, b, isbn, addMutationStage, true)
+	if err != nil {
+		return domain.MutationResult{}, err
 	}
-	result, err := setStatus(ctx, b, isbn, status, true)
+	return setStatusPreservingFinishDateUsingCandidate(ctx, b, isbn, status, candidate)
+}
+
+func setStatusPreservingFinishDateUsingCandidate(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	status domain.ReadingStatus,
+	candidate ratingCandidate,
+) (domain.MutationResult, error) {
+	if status != domain.StatusRead {
+		result, _, err := setStatusResolved(ctx, b, isbn, status, false, candidate)
+		return result, err
+	}
+	result, candidate, err := setStatusResolved(ctx, b, isbn, status, true, candidate)
 	if err != nil {
 		return domain.MutationResult{}, err
 	}
@@ -354,20 +381,24 @@ func setStatusPreservingFinishDate(
 		return verifyStatusMutation(before, result.After, status, false)
 	}
 	if before.DateRead == nil {
-		if _, err := ClearFinishDate(ctx, b, isbn); err != nil {
+		dateResult, err := clearFinishDateUsingCandidate(ctx, b, isbn, candidate)
+		if err != nil {
 			return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "add", completed, "date", err)
 		}
+		candidate.Book = dateResult.After
 	} else {
 		date, err := time.Parse("2006-01-02", *before.DateRead)
 		if err != nil {
 			parseErr := fmt.Errorf("%w at %s: prior finish date invalid", ErrCompatibility, addMutationStage)
 			return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "add", completed, "date", parseErr)
 		}
-		if _, err := SetFinishDate(ctx, b, isbn, date); err != nil {
+		dateResult, err := setFinishDateUsingCandidate(ctx, b, isbn, date, candidate)
+		if err != nil {
 			return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "add", completed, "date", err)
 		}
+		candidate.Book = dateResult.After
 	}
-	afterCandidate, err := findMutationCandidate(ctx, b, isbn, addMutationStage, true)
+	afterCandidate, err := readbackMutationCandidate(ctx, b, isbn, candidate, addMutationStage, true)
 	if err != nil {
 		readbackErr := fmt.Errorf("%w at mutation.verify: restored finish date unavailable", ErrMutationAmbiguous)
 		return domain.MutationResult{}, reconcileCompoundFailure(ctx, b, isbn, "add", completed, "verify", readbackErr)

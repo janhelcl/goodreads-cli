@@ -51,12 +51,23 @@ func SetFinishDate(
 	if err := domain.ValidateDate(date); err != nil {
 		return domain.MutationResult{}, err
 	}
-	wanted := date.Format("2006-01-02")
 	candidate, err := findMutationCandidate(ctx, b, isbn, finishDateStage, false)
 	if err != nil {
 		return domain.MutationResult{}, err
 	}
+	return setFinishDateUsingCandidate(ctx, b, isbn, date, candidate)
+}
+
+func setFinishDateUsingCandidate(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	date time.Time,
+	candidate ratingCandidate,
+) (domain.MutationResult, error) {
+	wanted := date.Format("2006-01-02")
 	before := candidate.Book
+	var err error
 	before.Review, err = loadFullReview(ctx, b, candidate.ReviewURL, finishDateStage)
 	if err != nil {
 		return domain.MutationResult{}, err
@@ -118,7 +129,7 @@ func SetFinishDate(
 	}
 	_ = page.Close()
 
-	afterCandidate, readbackErr := findMutationCandidate(ctx, b, isbn, finishDateStage, false)
+	afterCandidate, readbackErr := readbackMutationCandidate(ctx, b, isbn, candidate, finishDateStage, false)
 	if readbackErr != nil {
 		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable: %v", ErrMutationAmbiguous, readbackErr)
 	}
@@ -188,7 +199,17 @@ func ClearFinishDate(
 	if err != nil {
 		return domain.MutationResult{}, err
 	}
+	return clearFinishDateUsingCandidate(ctx, b, isbn, candidate)
+}
+
+func clearFinishDateUsingCandidate(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	candidate ratingCandidate,
+) (domain.MutationResult, error) {
 	before := candidate.Book
+	var err error
 	before.Review, err = loadFullReview(ctx, b, candidate.ReviewURL, finishDateStage)
 	if err != nil {
 		return domain.MutationResult{}, err
@@ -252,7 +273,7 @@ func ClearFinishDate(
 	}
 	_ = page.Close()
 
-	afterCandidate, readbackErr := findMutationCandidate(ctx, b, isbn, finishDateStage, false)
+	afterCandidate, readbackErr := readbackMutationCandidate(ctx, b, isbn, candidate, finishDateStage, false)
 	if readbackErr != nil {
 		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
 	}

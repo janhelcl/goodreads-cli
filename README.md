@@ -59,8 +59,11 @@ Authentication, populated/filtered shelf reads, and reversible live canaries
 for add, status, rating, finish date, and review passed. Exact lookup treats a
 unique owner ISBN match as conclusive when no other row shares that book ID,
 and otherwise locates the edition by a visible public ISBN book ID.
-Exact-edition operations use a separate 100-page safety budget; exhausting it
-returns `scan_incomplete` and guarantees that no mutation was attempted.
+Exact-edition operations request 100 rendered rows per shelf page and use a
+separate 100-page safety budget; exhausting it returns `scan_incomplete` and
+guarantees that no mutation was attempted. Mutations reuse the resolved owner
+row within one command and verify through a fresh load of that known page,
+falling back to the terminating exact scan if Goodreads moved the row.
 Compound `add` and `finish` operations report verified completed steps and one
 reconciled safe final state when a later step fails, and never roll back or
 replay automatically. The

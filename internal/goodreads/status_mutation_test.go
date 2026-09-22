@@ -198,12 +198,10 @@ func statusFlowBrowser(
 		html: `<form><textarea id="review_review_usertext" name="review[review]"></textarea></form>`,
 	}
 	b := &fakeBrowser{
-		pages: map[string]browser.Page{
-			pageURL:   action,
-			reviewURL: reviewPage,
-		},
+		pages: map[string]browser.Page{reviewURL: reviewPage},
 		pagesQueue: map[string][]browser.Page{
 			libraryURL: {before, after},
+			pageURL:   {action, after},
 		},
 	}
 	return b, action, isbn

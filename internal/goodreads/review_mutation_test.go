@@ -109,7 +109,7 @@ func TestReviewExplicitClearAndAlreadySatisfiedAreVerified(t *testing.T) {
 
 	b, _, isbn = reviewFlowBrowser(t, "same text", "same text")
 	result, err = Review(context.Background(), b, isbn, ptrString("same text"))
-	if err != nil || !result.Verified || len(b.calls) != 3 {
+	if err != nil || !result.Verified || len(b.calls) != 2 {
 		t.Fatalf("idempotent result=%+v err=%v calls=%v", result, err, b.calls)
 	}
 }
@@ -158,7 +158,8 @@ func reviewFlowBrowser(t *testing.T, beforeReview, afterReview string) (*fakeBro
 	reviewAfter := &fakePage{url: reviewURL, html: reviewFixture(afterReview)}
 	b := &fakeBrowser{
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), before, after},
+			libraryURL: {before},
+			pageURL:   {after},
 			reviewURL:  {reviewBefore, action, reviewAfter},
 		},
 	}

@@ -140,10 +140,10 @@ func TestGetScansForExactISBNAndRejectsAmbiguity(t *testing.T) {
 	pageTwo = strings.Replace(pageTwo, "book/show/42.Invented_Book", "book/show/43.Another_Book", 1)
 	b := &fakeBrowser{pages: map[string]browser.Page{
 		libraryURL: libraryTestPage(pageOne, "https://www.goodreads.com/review/list/123"),
-		"https://www.goodreads.com/review/list/123?page=2": libraryTestPage(pageTwo, "https://www.goodreads.com/review/list/123?page=2"),
+		"https://www.goodreads.com/review/list/123?page=2&per_page=100": libraryTestPage(pageTwo, "https://www.goodreads.com/review/list/123?page=2&per_page=100"),
 	}}
 	book, err := Get(context.Background(), b, isbn)
-	if err != nil || book.BookID != "43" || len(b.calls) != 3 {
+	if err != nil || book.BookID != "43" || len(b.calls) != 2 {
 		t.Fatalf("get book=%+v err=%v calls=%v", book, err, b.calls)
 	}
 	b.pages[libraryURL] = libraryTestPage(shelfFixture, "https://www.goodreads.com/review/list/123")
@@ -170,13 +170,16 @@ func TestGetResolvesBeyondTenPagesAndChecksToTermination(t *testing.T) {
 	}
 	b := exactScanBrowser(12, map[int]bool{11: true})
 	book, err := Get(context.Background(), b, isbn)
-	if err != nil || book.BookID != "1011" || len(b.calls) != 13 {
+	if err != nil || book.BookID != "1011" || len(b.calls) != 12 {
 		t.Fatalf("book=%+v err=%v calls=%d", book, err, len(b.calls))
+	}
+	if b.calls[0] != shelfTarget("", exactShelfPageSize).String() {
+		t.Fatalf("exact scan did not request %d rows: %v", exactShelfPageSize, b.calls)
 	}
 
 	b = exactScanBrowser(12, map[int]bool{1: true})
 	book, err = Get(context.Background(), b, isbn)
-	if err != nil || book.BookID != "1001" || len(b.calls) != 13 {
+	if err != nil || book.BookID != "1001" || len(b.calls) != 12 {
 		t.Fatalf("first-page book=%+v err=%v calls=%d", book, err, len(b.calls))
 	}
 }
@@ -187,7 +190,6 @@ func TestExactResolutionBudgetIsIncompleteAndPreventsAdd(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := exactScanBrowser(maxExactShelfPages+1, nil)
-	b.pagesQueue[libraryURL] = b.pagesQueue[libraryURL][1:]
 	_, err = Add(context.Background(), b, isbn, domain.StatusToRead)
 	if !errors.Is(err, ErrScanIncomplete) {
 		t.Fatalf("expected incomplete scan, got %v", err)
@@ -205,7 +207,7 @@ func TestExactResolutionRejectsPaginationLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := exactScanBrowser(2, nil)
-	loopURL := "https://www.goodreads.com/review/list/123?page=2"
+	loopURL := "https://www.goodreads.com/review/list/123?page=2&per_page=100"
 	b.pages[loopURL] = libraryTestPage(exactScanFixture(2, false, 2), loopURL)
 	if _, err := Get(context.Background(), b, isbn); !errors.Is(err, ErrCompatibility) {
 		t.Fatalf("pagination loop was accepted: %v", err)
@@ -216,7 +218,7 @@ func TestExactResolutionRejectsPaginationScopeChange(t *testing.T) {
 	isbn, _ := domain.NormalizeISBN("9780306406157")
 	b := exactScanBrowser(2, nil)
 	first := strings.Replace(exactScanFixture(1, false, 2), "?page=2", "?page=2&shelf=read", 1)
-	b.pagesQueue[libraryURL][1] = libraryTestPage(first, "https://www.goodreads.com/review/list/123")
+	b.pagesQueue[libraryURL][0] = libraryTestPage(first, "https://www.goodreads.com/review/list/123")
 	if _, err := Get(context.Background(), b, isbn); !errors.Is(err, ErrCompatibility) {
 		t.Fatalf("pagination scope change was accepted: %v", err)
 	}
@@ -224,7 +226,6 @@ func TestExactResolutionRejectsPaginationScopeChange(t *testing.T) {
 
 func TestBookIDResolutionUsesExactScanBudget(t *testing.T) {
 	b := exactScanBrowser(12, nil)
-	b.pagesQueue[libraryURL] = b.pagesQueue[libraryURL][1:]
 	found, err := libraryContainsBookID(context.Background(), b, "1011")
 	if err != nil || !found || len(b.calls) != 11 {
 		t.Fatalf("found=%t err=%v calls=%d", found, err, len(b.calls))
@@ -233,7 +234,7 @@ func TestBookIDResolutionUsesExactScanBudget(t *testing.T) {
 
 func TestGetResolvesUniqueISBNDespiteUnidentifiedSibling(t *testing.T) {
 	isbn, _ := domain.NormalizeISBN("9780306406157")
-	const pageTwoURL = "https://www.goodreads.com/review/list/123?page=2"
+	const pageTwoURL = "https://www.goodreads.com/review/list/123?page=2&per_page=100"
 	unknown := exactScanFixture(1, false, 2)
 	unknown = strings.Replace(unknown, "1-60358-055-7", "", 1)
 	unknown = strings.Replace(unknown, "9781603580557", "", 1)
@@ -245,7 +246,6 @@ func TestGetResolvesUniqueISBNDespiteUnidentifiedSibling(t *testing.T) {
 		},
 		pagesQueue: map[string][]browser.Page{
 			libraryURL: {
-				privatePage(),
 				libraryTestPage(unknown, "https://www.goodreads.com/review/list/123"),
 			},
 		},
@@ -281,14 +281,14 @@ func TestGetUsesPublicBookIDWhenOwnerISBNIsMissing(t *testing.T) {
 			bookURL:   &fakePage{url: bookURL, html: ownedBookFixture(true)},
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), shelf},
+			libraryURL: {shelf},
 		},
 	}
 	book, err := Get(context.Background(), b, isbn)
 	if err != nil || book.BookID != "42" {
 		t.Fatalf("get book=%+v err=%v calls=%v", book, err, b.calls)
 	}
-	for _, call := range b.calls[2:] {
+	for _, call := range b.calls[1:] {
 		if !strings.Contains(call, "/search") && !strings.Contains(call, "/book/show/") {
 			t.Fatalf("public ISBN match rescanned the library: %v", b.calls)
 		}
@@ -309,7 +309,7 @@ func TestGetReportsAbsentWhenPublicBookIDIsMissingFromLibrary(t *testing.T) {
 			bookURL:   &fakePage{url: bookURL, html: ownedBookFixture(true)},
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), shelf},
+			libraryURL: {shelf},
 		},
 	}
 	if _, err := Get(context.Background(), b, isbn); !errors.Is(err, ErrBookNotFound) {
@@ -349,7 +349,7 @@ func TestGetPreservesPublicLookupTimeout(t *testing.T) {
 			searchURL: &fakePage{url: searchURL, html: `<html><body><p>loading</p></body></html>`},
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), shelf},
+			libraryURL: {shelf},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
@@ -364,14 +364,14 @@ func exactScanBrowser(pageCount int, matches map[int]bool) *fakeBrowser {
 	b := &fakeBrowser{
 		pages: map[string]browser.Page{},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage()},
+			libraryURL: {},
 		},
 	}
 	for pageNumber := 1; pageNumber <= pageCount; pageNumber++ {
 		requestURL := libraryURL
 		currentURL := "https://www.goodreads.com/review/list/123"
 		if pageNumber > 1 {
-			requestURL = fmt.Sprintf("%s?page=%d", currentURL, pageNumber)
+			requestURL = fmt.Sprintf("%s?page=%d&per_page=%d", currentURL, pageNumber, exactShelfPageSize)
 			currentURL = requestURL
 		}
 		next := pageNumber + 1

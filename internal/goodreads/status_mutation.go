@@ -57,31 +57,45 @@ func setStatus(
 	if err != nil {
 		return domain.MutationResult{}, err
 	}
+	result, _, err := setStatusResolved(ctx, b, isbn, status, allowFinishDateChange, candidate)
+	return result, err
+}
+
+func setStatusResolved(
+	ctx context.Context,
+	b browser.Browser,
+	isbn domain.ISBN,
+	status domain.ReadingStatus,
+	allowFinishDateChange bool,
+	candidate ratingCandidate,
+) (domain.MutationResult, ratingCandidate, error) {
 	page, err := b.NewPage(ctx, candidate.PageURL)
 	if err != nil {
-		return domain.MutationResult{}, fmt.Errorf("%s: target page unavailable: %w", statusMutationStage, err)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%s: target page unavailable: %w", statusMutationStage, err)
 	}
 	before, err := mutationBookOnPage(ctx, page, candidate, isbn, statusMutationStage)
 	if err != nil {
 		_ = page.Close()
-		return domain.MutationResult{}, err
+		return domain.MutationResult{}, ratingCandidate{}, err
 	}
 	before.Review, err = loadFullReview(ctx, b, candidate.ReviewURL, statusMutationStage)
 	if err != nil {
 		_ = page.Close()
-		return domain.MutationResult{}, err
+		return domain.MutationResult{}, ratingCandidate{}, err
 	}
+	candidate.Book = before
 	if before.Status == status {
 		_ = page.Close()
-		return verifyStatusMutation(before, before, status, allowFinishDateChange)
+		result, verifyErr := verifyStatusMutation(before, before, status, allowFinishDateChange)
+		return result, candidate, verifyErr
 	}
 
 	if err := openStatusChooser(ctx, page, candidate, isbn, before.Status); err != nil {
 		_ = page.Close()
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, errChooserClick) {
-			return domain.MutationResult{}, err
+			return domain.MutationResult{}, ratingCandidate{}, err
 		}
-		return domain.MutationResult{}, fmt.Errorf("%w at %s: shelf chooser contract changed (%v)", ErrCompatibility, statusMutationStage, err)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at %s: shelf chooser contract changed (%v)", ErrCompatibility, statusMutationStage, err)
 	}
 
 	statusSelector := fmt.Sprintf(
@@ -99,23 +113,24 @@ func setStatus(
 	}
 	_ = page.Close()
 
-	afterCandidate, readbackErr := findMutationCandidate(ctx, b, isbn, statusMutationStage, true)
+	afterCandidate, readbackErr := readbackMutationCandidate(ctx, b, isbn, candidate, statusMutationStage, true)
 	if readbackErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at mutation.verify: readback unavailable", ErrMutationAmbiguous)
 	}
 	after := afterCandidate.Book
 	after.Review, readbackErr = loadFullReview(ctx, b, afterCandidate.ReviewURL, statusMutationStage)
 	if readbackErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable", ErrMutationAmbiguous)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at mutation.verify: preservation readback unavailable", ErrMutationAmbiguous)
 	}
+	afterCandidate.Book = after
 	result, verifyErr := verifyStatusMutation(before, after, status, allowFinishDateChange)
 	if verifyErr == nil {
-		return result, nil
+		return result, afterCandidate, nil
 	}
 	if clickErr != nil || completionErr != nil {
-		return domain.MutationResult{}, fmt.Errorf("%w at %s: completion unknown", ErrMutationAmbiguous, statusMutationStage)
+		return domain.MutationResult{}, ratingCandidate{}, fmt.Errorf("%w at %s: completion unknown", ErrMutationAmbiguous, statusMutationStage)
 	}
-	return domain.MutationResult{}, verifyErr
+	return domain.MutationResult{}, ratingCandidate{}, verifyErr
 }
 
 func openStatusChooser(

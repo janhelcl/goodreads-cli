@@ -152,7 +152,7 @@ For each page:
 
 Missing optional data is represented explicitly. Missing data required for the operation is a compatibility error.
 
-For list operations, the caller's result limit bounds pagination. Exact-identity operations use a separate resolution strategy and MUST NOT inherit a small list-oriented page limit. Exhausting a documented page/request budget returns `ErrScanIncomplete`; it is not not-found and is not selector drift.
+For list operations, the caller's result limit bounds pagination. Exact-identity operations use a separate resolution strategy and MUST NOT inherit a small list-oriented page limit. The current exact scanner requests the validated `per_page=100` rendered shelf size and still scans to actual termination to detect duplicates. Exhausting a documented page/request budget returns `ErrScanIncomplete`; it is not not-found and is not selector drift.
 
 The adapter must not retain parsed books after returning. Browser HTTP cache is acceptable runtime behavior; application-level result caching is not.
 
@@ -208,6 +208,12 @@ Common requirements:
 - parse the resulting fields;
 - compare requested changes and preservation invariants;
 - return `Verified=true` only after a match.
+
+The terminating resolution scan may supply an in-memory row candidate to
+later steps in the same command. Fresh verification first revisits that known
+owner page and requires the same row ID, book ID, and exact ISBN. If the row
+moved or disappeared, verification falls back to the full exact resolver.
+Candidate state is never persisted or reused across commands.
 
 A click or form submission is not success. An HTTP 2xx observed inside the browser is not success. A toast may be one completion signal but is not readback verification.
 

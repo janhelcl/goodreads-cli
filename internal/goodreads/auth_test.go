@@ -88,7 +88,17 @@ func (b *fakeBrowser) NewPage(_ context.Context, target string) (browser.Page, e
 		b.pagesQueue[target] = queued[1:]
 		return queued[0], nil
 	}
-	return b.pages[target], nil
+	if page := b.pages[target]; page != nil {
+		return page, nil
+	}
+	if target == shelfTarget("", exactShelfPageSize).String() {
+		if queued := b.pagesQueue[libraryURL]; len(queued) > 0 {
+			b.pagesQueue[libraryURL] = queued[1:]
+			return queued[0], nil
+		}
+		return b.pages[libraryURL], nil
+	}
+	return nil, nil
 }
 func (b *fakeBrowser) Close() error { return nil }
 

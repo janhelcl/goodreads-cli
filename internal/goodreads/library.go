@@ -21,6 +21,7 @@ var errLibraryTableNotReady = errors.New("required table markers missing")
 const (
 	maxListShelfPages  = 10
 	maxExactShelfPages = 100
+	exactShelfPageSize = 100
 )
 
 // pageReadyTimeout bounds how long Status and shelf reads wait for the
@@ -35,7 +36,7 @@ func Library(ctx context.Context, b browser.Browser, filter domain.LibraryFilter
 		return nil, err
 	}
 	books := make([]domain.Book, 0, filter.Limit)
-	err := scanShelf(ctx, b, filter.Shelf, maxListShelfPages, ErrPageLimit, func(book domain.Book) bool {
+	err := scanShelf(ctx, b, filter.Shelf, 0, maxListShelfPages, ErrPageLimit, func(book domain.Book) bool {
 		if filter.Rating == 0 || book.Rating == filter.Rating {
 			books = append(books, book)
 		}
@@ -51,13 +52,6 @@ func Library(ctx context.Context, b browser.Browser, filter domain.LibraryFilter
 // The full bounded scan is required to detect duplicate matches. An unidentified
 // sibling row does not hide a unique ISBN match with a different book ID.
 func Get(ctx context.Context, b browser.Browser, isbn domain.ISBN) (domain.Book, error) {
-	state, err := Status(ctx, b)
-	if err != nil {
-		return domain.Book{}, err
-	}
-	if !state.Connected {
-		return domain.Book{}, ErrSessionExpired
-	}
 	candidate, err := resolveOwnedEdition(ctx, b, isbn, "", false, true)
 	if err != nil {
 		return domain.Book{}, err
@@ -81,16 +75,12 @@ func scanShelf(
 	ctx context.Context,
 	b browser.Browser,
 	shelf domain.ReadingStatus,
+	pageSize int,
 	maxPages int,
 	incompleteError error,
 	visit func(domain.Book) bool,
 ) error {
-	target, _ := url.Parse(libraryURL)
-	if shelf != "" {
-		query := target.Query()
-		query.Set("shelf", string(shelf))
-		target.RawQuery = query.Encode()
-	}
+	target := shelfTarget(shelf, pageSize)
 	visited := map[string]bool{}
 	for pageNumber := 0; pageNumber < maxPages; pageNumber++ {
 		if visited[target.String()] {
@@ -122,13 +112,39 @@ func scanShelf(
 			return fmt.Errorf("%w at library.page: invalid next link", ErrCompatibility)
 		}
 		target = currentURL.ResolveReference(next)
+		currentScope := paginationScopeWithPageSize(currentURL, pageSize)
+		target = paginationScopeWithPageSize(target, pageSize)
 		if !isGoodreadsPage(target.String()) || target.Path != currentURL.Path ||
 			target.Query().Get("shelf") != string(shelf) ||
-			!samePaginationScope(currentURL, target) {
+			!samePaginationScope(currentScope, target) {
 			return fmt.Errorf("%w at library.page: next link left shelf", ErrCompatibility)
 		}
 	}
 	return incompleteError
+}
+
+func shelfTarget(shelf domain.ReadingStatus, pageSize int) *url.URL {
+	target, _ := url.Parse(libraryURL)
+	query := target.Query()
+	if shelf != "" {
+		query.Set("shelf", string(shelf))
+	}
+	if pageSize > 0 {
+		query.Set("per_page", fmt.Sprintf("%d", pageSize))
+	}
+	target.RawQuery = query.Encode()
+	return target
+}
+
+func paginationScopeWithPageSize(target *url.URL, pageSize int) *url.URL {
+	clone := *target
+	if pageSize <= 0 {
+		return &clone
+	}
+	query := clone.Query()
+	query.Set("per_page", fmt.Sprintf("%d", pageSize))
+	clone.RawQuery = query.Encode()
+	return &clone
 }
 
 func readLibraryShelfPage(ctx context.Context, page browser.Page, shelf domain.ReadingStatus) (shelfPage, *url.URL, error) {
