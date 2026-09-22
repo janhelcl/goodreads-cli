@@ -317,6 +317,26 @@ func TestGetReportsAbsentWhenPublicBookIDIsMissingFromLibrary(t *testing.T) {
 	}
 }
 
+func TestGetReportsAbsentWhenPublicSearchHasNoResults(t *testing.T) {
+	isbn, _ := domain.NormalizeISBN("9780306406157")
+	unknown := ownerStatusFixture(domain.StatusRead, false)
+	unknown = strings.Replace(unknown, "0-306-40615-2", "", 1)
+	unknown = strings.Replace(unknown, "9780306406157", "", 1)
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	shelf := libraryTestPage(unknown, "https://www.goodreads.com/review/list/123")
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{
+			searchURL: &fakePage{url: searchURL, html: emptyPublicSearch},
+		},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {privatePage(), shelf},
+		},
+	}
+	if _, err := Get(context.Background(), b, isbn); !errors.Is(err, ErrBookNotFound) {
+		t.Fatalf("empty public search=%v calls=%v", err, b.calls)
+	}
+}
+
 func TestGetPreservesPublicLookupTimeout(t *testing.T) {
 	isbn, _ := domain.NormalizeISBN("9780306406157")
 	unknown := ownerStatusFixture(domain.StatusRead, false)
@@ -326,7 +346,7 @@ func TestGetPreservesPublicLookupTimeout(t *testing.T) {
 	shelf := libraryTestPage(unknown, "https://www.goodreads.com/review/list/123")
 	b := &fakeBrowser{
 		pages: map[string]browser.Page{
-			searchURL: &fakePage{url: searchURL, html: `<html><body><form action="/search"></form></body></html>`},
+			searchURL: &fakePage{url: searchURL, html: `<html><body><p>loading</p></body></html>`},
 		},
 		pagesQueue: map[string][]browser.Page{
 			libraryURL: {privatePage(), shelf},

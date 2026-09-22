@@ -161,9 +161,11 @@ func resolvePublicBook(
 	if searchPage == nil {
 		return resolvedBook{}, nil, fmt.Errorf("%w at book.resolve: search results unavailable", ErrCompatibility)
 	}
+	// A completed search may have zero book routes. Waiting for a
+	// /book/show/ link would turn that legitimate absence into a timeout
+	// for unrecognized ISBNs and the unidentified-row public fallback.
 	searchDoc, err := waitForDocument(ctx, searchPage, func(doc *goquery.Document) bool {
-		return doc.Find("form[action='/search']").Length() == 1 &&
-			doc.Find("a[href*='/book/show/']").Length() > 0
+		return doc.Find("form[action='/search']").Length() == 1
 	})
 	if err != nil {
 		_ = searchPage.Close()

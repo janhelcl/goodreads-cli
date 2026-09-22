@@ -114,6 +114,20 @@ func TestLookupPublicBookIDAcceptsOwnedBookPage(t *testing.T) {
 	}
 }
 
+func TestResolvePublicBookReportsEmptySearch(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		searchURL: &fakePage{url: searchURL, html: emptyPublicSearch},
+	}}
+	if _, _, err := resolvePublicBook(context.Background(), b, isbn, false); !errors.Is(err, ErrBookNotFound) {
+		t.Fatalf("empty search=%v calls=%v", err, b.calls)
+	}
+}
+
 func TestResolvePublicBookPreservesSearchTimeout(t *testing.T) {
 	isbn, err := domain.NormalizeISBN("9780306406157")
 	if err != nil {
@@ -121,7 +135,7 @@ func TestResolvePublicBookPreservesSearchTimeout(t *testing.T) {
 	}
 	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
 	b := &fakeBrowser{pages: map[string]browser.Page{
-		searchURL: &fakePage{url: searchURL, html: `<html><body><form action="/search"></form></body></html>`},
+		searchURL: &fakePage{url: searchURL, html: `<html><body><p>loading</p></body></html>`},
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
@@ -240,6 +254,26 @@ func TestAddUsesResolvedBookIDWhenOwnerRowHasNoISBN(t *testing.T) {
 	}
 }
 
+func TestAddReportsUnrecognizedPublicISBN(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	empty := libraryTestPage(emptyOwnerLibrary, "https://www.goodreads.com/review/list/123")
+	b := &fakeBrowser{
+		pages: map[string]browser.Page{
+			searchURL: &fakePage{url: searchURL, html: emptyPublicSearch},
+		},
+		pagesQueue: map[string][]browser.Page{
+			libraryURL: {empty},
+		},
+	}
+	if _, err := Add(context.Background(), b, isbn, domain.StatusToRead); !errors.Is(err, ErrBookNotFound) {
+		t.Fatalf("unrecognized ISBN=%v calls=%v", err, b.calls)
+	}
+}
+
 func TestAddRejectsInvalidStatusBeforeBrowserWork(t *testing.T) {
 	isbn, err := domain.NormalizeISBN("9780306406157")
 	if err != nil {
@@ -348,6 +382,8 @@ func TestNewAddPreservesNestedStatusPartialDetails(t *testing.T) {
 		t.Fatalf("result=%+v partial=%+v err=%v", result, partial, err)
 	}
 }
+
+const emptyPublicSearch = `<html><body><form action="/search"></form></body></html>`
 
 func addSearchFixture(route string) string {
 	return fmt.Sprintf(`<html><body><form action="/search"></form><a href="%s">result</a></body></html>`, route)

@@ -170,7 +170,7 @@ Resolution may use Goodreads' visible search/navigation UI or ISBN information o
 
 A title/author match alone is never sufficient. If Goodreads hides ISBNs needed for proof, record the alternative stable identity contract in the compatibility matrix before implementation.
 
-Public ISBN identity for `get` proves one book ID from the visible search result and book-page metadata. It MUST NOT wait for the Want-to-Read add control: already-owned book pages replace that control with a shelf-status action. Add still waits for Want to Read before clicking it. After the public book ID is proved, match it against the owner rows already scanned for that call; do not load the library again. A public-lookup timeout or cancellation stays a timeout or cancellation; it is not remapped to `library.row`.
+Public ISBN identity for `get` proves one book ID from the visible search result and book-page metadata. It MUST NOT wait for the Want-to-Read add control: already-owned book pages replace that control with a shelf-status action. Add still waits for Want to Read before clicking it. After the public book ID is proved, match it against the owner rows already scanned for that call; do not load the library again. A completed search page with no book route is `book_not_found`; do not wait for a `/book/show/` link that will never appear. A public-lookup timeout or cancellation stays a timeout or cancellation; it is not remapped to `library.row`.
 
 Before changing the existing full-shelf scan, run a focused compatibility experiment in this order:
 
