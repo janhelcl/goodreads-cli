@@ -329,7 +329,7 @@ func TestGetReportsAbsentWhenPublicSearchHasNoResults(t *testing.T) {
 			searchURL: &fakePage{url: searchURL, html: emptyPublicSearch},
 		},
 		pagesQueue: map[string][]browser.Page{
-			libraryURL: {privatePage(), shelf},
+			libraryURL: {shelf},
 		},
 	}
 	if _, err := Get(context.Background(), b, isbn); !errors.Is(err, ErrBookNotFound) {

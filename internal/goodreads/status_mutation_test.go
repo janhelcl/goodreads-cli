@@ -201,7 +201,7 @@ func statusFlowBrowser(
 		pages: map[string]browser.Page{reviewURL: reviewPage},
 		pagesQueue: map[string][]browser.Page{
 			libraryURL: {before, after},
-			pageURL:   {action, after},
+			pageURL:    {action, after},
 		},
 	}
 	return b, action, isbn

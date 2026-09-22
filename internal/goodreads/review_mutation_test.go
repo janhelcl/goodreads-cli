@@ -159,7 +159,7 @@ func reviewFlowBrowser(t *testing.T, beforeReview, afterReview string) (*fakeBro
 	b := &fakeBrowser{
 		pagesQueue: map[string][]browser.Page{
 			libraryURL: {before},
-			pageURL:   {after},
+			pageURL:    {after},
 			reviewURL:  {reviewBefore, action, reviewAfter},
 		},
 	}
