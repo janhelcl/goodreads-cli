@@ -267,6 +267,59 @@ func TestGetResolvesUniqueISBNDespiteUnidentifiedSibling(t *testing.T) {
 	}
 }
 
+func TestGetWaitsForHydratingISBNCells(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("978 0 306 40615 7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isbn != compact {
+		t.Fatalf("spaced ISBN normalized differently: %+v vs %+v", isbn, compact)
+	}
+	hydrated := ownerStatusFixture(domain.StatusRead, false)
+	unhydrated := strings.Replace(hydrated, "0-306-40615-2", "", 1)
+	unhydrated = strings.Replace(unhydrated, "9780306406157", "", 1)
+	reads := 0
+	page := libraryTestPage(unhydrated, "https://www.goodreads.com/review/list/123")
+	page.htmlFunc = func() string {
+		reads++
+		if reads < 4 {
+			return unhydrated
+		}
+		return hydrated
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{libraryURL: page}}
+	book, err := Get(context.Background(), b, isbn)
+	if err != nil || book.BookID != "42" || book.ISBN13 != "9780306406157" {
+		t.Fatalf("hydrating ISBN get book=%+v err=%v calls=%v", book, err, b.calls)
+	}
+	for _, call := range b.calls {
+		if strings.Contains(call, "/search") {
+			t.Fatalf("unhydrated ISBN cells fell through to public search: %v", b.calls)
+		}
+	}
+}
+
+func TestGetSpacedISBNUsesOwnerScan(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("978 0 306 40615 7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		libraryURL: libraryTestPage(ownerStatusFixture(domain.StatusRead, false), "https://www.goodreads.com/review/list/123"),
+	}}
+	book, err := Get(context.Background(), b, isbn)
+	if err != nil || book.ISBN13 != "9780306406157" || len(b.calls) != 1 {
+		t.Fatalf("spaced ISBN get book=%+v err=%v calls=%v", book, err, b.calls)
+	}
+	if strings.Contains(b.calls[0], "/search") {
+		t.Fatalf("spaced ISBN opened public search: %v", b.calls)
+	}
+}
+
 func TestGetUsesPublicBookIDWhenOwnerISBNIsMissing(t *testing.T) {
 	isbn, _ := domain.NormalizeISBN("9780306406157")
 	unknown := ownerStatusFixture(domain.StatusRead, false)

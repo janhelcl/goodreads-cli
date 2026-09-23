@@ -185,6 +185,8 @@ Resolution may use Goodreads' visible search/navigation UI or ISBN information o
 
 A title/author match alone is never sufficient. If Goodreads hides ISBNs needed for proof, record the alternative stable identity contract in the compatibility matrix before implementation.
 
+The owner-library table can paint `#books` before ISBN cells hydrate. Exact resolution MUST keep reading that page until an ISBN-10/13 value appears or the empty column is stable. Snapshotting an all-empty ISBN column as unidentified MUST NOT send a present exact edition through public search.
+
 Public ISBN identity for `get` proves one book ID from the visible search result and book-page metadata. It MUST NOT wait for the Want-to-Read add control: already-owned book pages replace that control with a shelf-status action. Add still waits for Want to Read before clicking it. After the public book ID is proved, match it against the owner rows already scanned for that call; do not load the library again. Wait until a `/book/show/` result or the completed empty-results marker (`.NoBookSearchResults`) is present; the search form alone is not a finished result set. A completed search page with no book route is `book_not_found`; do not wait for a `/book/show/` link that will never appear. Edition proof uses the visible metadata section when Goodreads renders the ISBN there, otherwise the book page's schema.org JSON-LD `isbn` on a `Book` object. The search box and document title are not identity proof. A public-lookup timeout or cancellation stays a timeout or cancellation; it is not remapped to `library.row`.
 
 Before changing the existing full-shelf scan, run a focused compatibility experiment in this order:

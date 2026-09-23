@@ -160,9 +160,11 @@ func findMutationCandidate(
 // additionally validate the controls they need on the matched row.
 //
 // Owner-library ISBN search does not prove a row. A unique owner ISBN match is
-// conclusive when no other row shares that book ID. If no ISBN match remains
-// after termination and an unidentified row is present, Get locates the edition
-// by a visible public ISBN book ID. That identity path does not wait for the
+// conclusive when no other row shares that book ID. The table can appear
+// before ISBN cells hydrate; wait for those values or a stable empty column
+// before treating every row as unidentified. If no ISBN match remains after
+// termination and an unidentified row is present, Get locates the edition by
+// a visible public ISBN book ID. That identity path does not wait for the
 // Want-to-Read add control, which already-owned book pages no longer expose,
 // and it matches the already-scanned owner rows instead of loading the library
 // again after the public book page.
@@ -240,6 +242,11 @@ func scanOwnedCandidates(
 			return ratingCandidate{}, 0, nil, false, nil, fmt.Errorf("book.resolve: navigation failed: %w", err)
 		}
 		parsed, currentURL, err := readLibraryShelfPage(ctx, page, "")
+		if err != nil {
+			_ = page.Close()
+			return ratingCandidate{}, 0, nil, false, nil, err
+		}
+		parsed, err = waitForISBNColumns(ctx, page, parsed)
 		if err != nil {
 			_ = page.Close()
 			return ratingCandidate{}, 0, nil, false, nil, err

@@ -147,6 +147,64 @@ func paginationScopeWithPageSize(target *url.URL, pageSize int) *url.URL {
 	return &clone
 }
 
+func shelfHasAnyISBN(books []domain.Book) bool {
+	for _, book := range books {
+		if book.ISBN10 != "" || book.ISBN13 != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForISBNColumns keeps reading a table that parsed with rows but no
+// ISBN-10/13 values. Goodreads can paint #books before those cells hydrate.
+// Snapshotting then treats a present exact edition as unidentified and pays
+// for a public ISBN search. A stable empty column is a real unidentified
+// page and must proceed; a changing document is still loading.
+func waitForISBNColumns(ctx context.Context, page browser.Page, parsed shelfPage) (shelfPage, error) {
+	if len(parsed.Books) == 0 || shelfHasAnyISBN(parsed.Books) {
+		return parsed, nil
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, pageReadyTimeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	lastHTML := ""
+	stable := 0
+	for {
+		html, err := page.HTML(ctx)
+		if err != nil {
+			return parsed, fmt.Errorf("library.page: DOM unavailable: %w", err)
+		}
+		next, parseErr := parseShelfPage(html)
+		if parseErr == nil {
+			parsed = next
+			if len(parsed.Books) == 0 || shelfHasAnyISBN(parsed.Books) {
+				return parsed, nil
+			}
+			if html == lastHTML {
+				stable++
+				if stable >= 3 {
+					return parsed, nil
+				}
+			} else {
+				stable = 0
+				lastHTML = html
+			}
+		} else if !errors.Is(parseErr, errLibraryTableNotReady) {
+			return parsed, parseErr
+		}
+		select {
+		case <-readyCtx.Done():
+			if ctx.Err() != nil {
+				return parsed, ctx.Err()
+			}
+			return parsed, nil
+		case <-ticker.C:
+		}
+	}
+}
+
 func readLibraryShelfPage(ctx context.Context, page browser.Page, shelf domain.ReadingStatus) (shelfPage, *url.URL, error) {
 	readyCtx, cancel := context.WithTimeout(ctx, pageReadyTimeout)
 	defer cancel()

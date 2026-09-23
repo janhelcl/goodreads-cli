@@ -46,6 +46,18 @@ func (a authStub) Library(context.Context, domain.LibraryFilter) ([]domain.Book,
 func (a authStub) Get(context.Context, domain.ISBN) (domain.Book, error) {
 	return a.book, a.err
 }
+
+type getISBNStub struct {
+	authStub
+	got *domain.ISBN
+}
+
+func (s getISBNStub) Get(_ context.Context, isbn domain.ISBN) (domain.Book, error) {
+	if s.got != nil {
+		*s.got = isbn
+	}
+	return s.authStub.Get(context.Background(), isbn)
+}
 func (a authStub) Add(context.Context, domain.ISBN, domain.ReadingStatus) (domain.MutationResult, error) {
 	return a.result, a.err
 }
@@ -300,6 +312,18 @@ func TestGetExactISBNAndErrors(t *testing.T) {
 	})
 	if code != 0 || !strings.Contains(out.String(), `"book_id":"42"`) || errOut.Len() != 0 {
 		t.Fatalf("get code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	var gotISBN domain.ISBN
+	code = run([]string{"get", "978 0 306 40615 7", "--json"}, &out, &errOut, func(bool) (app.Service, error) {
+		return getISBNStub{
+			authStub: authStub{book: domain.Book{BookID: "42", Title: "Invented Book", ISBN13: "9780306406157"}},
+			got:      &gotISBN,
+		}, nil
+	})
+	if code != 0 || gotISBN.ISBN13 != "9780306406157" || gotISBN.ISBN10 != "0306406152" {
+		t.Fatalf("spaced ISBN code=%d isbn=%+v stdout=%q", code, gotISBN, out.String())
 	}
 	out.Reset()
 	errOut.Reset()
