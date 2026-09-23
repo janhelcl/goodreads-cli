@@ -119,7 +119,10 @@ Launch Chromium with only the flags required for profile selection, headless/hea
 - do not install extensions;
 - do not load arbitrary user scripts;
 - restrict navigation to expected Goodreads origins except user-controlled identity-provider navigation during login;
-- treat unexpected post-login cross-origin navigation as an error.
+- treat unexpected post-login cross-origin navigation as an error;
+- leftover cleanup may terminate only processes whose command line contains
+  the exact dedicated `--user-data-dir`; never a user's ordinary browser
+  profile. Errors omit that path.
 
 Containers that require weakened browser sandboxing need a separate deployment threat-model decision; v0.1 does not silently opt into it.
 

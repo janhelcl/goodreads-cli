@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -370,6 +371,7 @@ func TestRodProfilePersistsAndRejectsRedirect(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
+	assertNoProfileChrome(t, paths.Browser)
 	second, err := factory.Launch(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -518,5 +520,81 @@ func TestRodCancellationStopsBrowser(t *testing.T) {
 	defer checkCancel()
 	if err := waitProcessExit(checkCtx, pid); err != nil {
 		t.Fatalf("browser survived cancellation: %v", err)
+	}
+	assertNoProfileChrome(t, paths.Browser)
+}
+
+func TestLaunchClearsLeftoverProfileChrome(t *testing.T) {
+	if os.Getenv("GOODREADS_BROWSER_TESTS") != "1" {
+		t.Skip("set GOODREADS_BROWSER_TESTS=1 for local Chromium component test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	paths := profile.PathsForRoot(filepath.Join(t.TempDir(), "app"))
+	if err := paths.EnsureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := ResolveExecutable(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftover := exec.Command(exe.Path,
+		"--user-data-dir="+paths.Browser,
+		"--headless=new",
+		"--no-first-run",
+		"--no-startup-window",
+		"--remote-debugging-port=0",
+	)
+	if err := leftover.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = leftover.Process.Kill()
+		_, _ = leftover.Process.Wait()
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pids, err := processesUsingProfile(paths.Browser)
+		if err == nil && len(pids) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("leftover chrome did not start: pids=%v err=%v", pids, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<html><body>fixture</body></html>")
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := (RodFactory{}).Launch(ctx, LaunchOptions{
+		ProfileDir:     paths.Browser,
+		Headless:       true,
+		AllowedOrigins: []string{u.Scheme + "://" + u.Host},
+	})
+	if err != nil {
+		t.Fatalf("launch with leftover profile chrome: %v", err)
+	}
+	page, err := b.NewPage(ctx, server.URL+"/ok")
+	if err != nil {
+		_ = b.Close()
+		t.Fatal(err)
+	}
+	_ = page.Close()
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertNoProfileChrome(t, paths.Browser)
+}
+
+func assertNoProfileChrome(t *testing.T, profileDir string) {
+	t.Helper()
+	pids, err := processesUsingProfile(profileDir)
+	if err != nil || len(pids) != 0 {
+		t.Fatalf("leftover profile chrome: pids=%v err=%v", pids, err)
 	}
 }

@@ -34,7 +34,13 @@ Use one dedicated persistent Chromium user-data directory per local account.
 - Ordinary operations launch it headlessly by default.
 - `--headed` uses the same flows and profile with a visible window.
 - All commands serialize access with the per-profile lock.
-- The adapter closes every browser it starts.
+- The adapter closes every browser it starts. Close uses an independent
+  timeout so a cancelled operation can still shut the browser down, and it
+  must not leave a process whose command line uses the exact dedicated
+  `--user-data-dir`.
+- Before launch, while holding the profile lock, stop leftover processes
+  that still use that profile so a previous failure cannot look like a
+  launch or session error.
 - The profile persists until explicit logout/reset.
 - Cookies stay browser-managed; do not copy them into a separate Go HTTP cookie jar.
 
@@ -179,7 +185,7 @@ Resolution may use Goodreads' visible search/navigation UI or ISBN information o
 
 A title/author match alone is never sufficient. If Goodreads hides ISBNs needed for proof, record the alternative stable identity contract in the compatibility matrix before implementation.
 
-Public ISBN identity for `get` proves one book ID from the visible search result and book-page metadata. It MUST NOT wait for the Want-to-Read add control: already-owned book pages replace that control with a shelf-status action. Add still waits for Want to Read before clicking it. After the public book ID is proved, match it against the owner rows already scanned for that call; do not load the library again. A completed search page with no book route is `book_not_found`; do not wait for a `/book/show/` link that will never appear. A public-lookup timeout or cancellation stays a timeout or cancellation; it is not remapped to `library.row`.
+Public ISBN identity for `get` proves one book ID from the visible search result and book-page metadata. It MUST NOT wait for the Want-to-Read add control: already-owned book pages replace that control with a shelf-status action. Add still waits for Want to Read before clicking it. After the public book ID is proved, match it against the owner rows already scanned for that call; do not load the library again. Wait until a `/book/show/` result or the completed empty-results marker (`.NoBookSearchResults`) is present; the search form alone is not a finished result set. A completed search page with no book route is `book_not_found`; do not wait for a `/book/show/` link that will never appear. Edition proof uses the visible metadata section when Goodreads renders the ISBN there, otherwise the book page's schema.org JSON-LD `isbn` on a `Book` object. The search box and document title are not identity proof. A public-lookup timeout or cancellation stays a timeout or cancellation; it is not remapped to `library.row`.
 
 Before changing the existing full-shelf scan, run a focused compatibility experiment in this order:
 

@@ -78,7 +78,9 @@ func main() {
 	}
 	fmt.Println("search_form_count", searchDoc.Find("form[action='/search']").Length())
 	fmt.Println("search_results_container_count",
-		searchDoc.Find("table.tableList, div.searchResults, div.bookSearchResults").Length())
+		searchDoc.Find("table.tableList, div.searchResults, div.bookSearchResults, .SearchContentWrapper__results").Length())
+	fmt.Println("search_empty_marker_count", searchDoc.Find(".NoBookSearchResults").Length())
+	fmt.Println("search_results_count_marker", searchDoc.Find(".SearchResultsCount").Length())
 	links := uniqueBookLinks(searchDoc)
 	fmt.Println("search_unique_book_routes", len(links))
 	fmt.Println("search_exact_isbn10_present", isbn.ISBN10 != "" && strings.Contains(searchDoc.Text(), isbn.ISBN10))
@@ -176,8 +178,11 @@ func main() {
 
 func waitForSearch(ctx context.Context, page browser.Page) (*goquery.Document, error) {
 	return waitForDOM(ctx, page, func(doc *goquery.Document) bool {
-		return doc.Find("form[action='/search']").Length() > 0 &&
-			len(uniqueBookLinks(doc)) > 0
+		if doc.Find("form[action='/search']").Length() == 0 {
+			return false
+		}
+		return len(uniqueBookLinks(doc)) > 0 ||
+			doc.Find(".NoBookSearchResults").Length() > 0
 	})
 }
 

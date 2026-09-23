@@ -164,7 +164,8 @@ The launcher is responsible for:
 - launching it with the dedicated user-data directory;
 - using headed mode for login and headless mode by default otherwise;
 - keeping debugging endpoints local to the process;
-- propagating cancellation and closing browser processes;
+- propagating cancellation and closing browser processes, including
+  leftover Chrome that still uses the dedicated profile;
 - configuring a private temporary download directory unless the user requested a destination;
 - producing typed launch and browser-unavailable errors;
 - keeping an operation timeout or cancellation during discovery or launch as

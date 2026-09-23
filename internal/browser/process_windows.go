@@ -39,3 +39,22 @@ func waitProcessExit(ctx context.Context, pid int) error {
 		}
 	}
 }
+
+func processesUsingProfile(string) ([]int, error) {
+	return nil, nil
+}
+
+func killProcess(pid int) error {
+	if skipProcess(pid) {
+		return nil
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	return windows.TerminateProcess(handle, 1)
+}

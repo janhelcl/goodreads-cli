@@ -2,6 +2,7 @@ package goodreads
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -79,6 +80,17 @@ func Add(
 	requestCtx, cancelRequest := context.WithTimeout(ctx, 15*time.Second)
 	clickErr := page.ClickAndWaitForRequest(requestCtx, addSelector)
 	cancelRequest()
+	// The first allowed XHR after the click may be unrelated. Closing the
+	// book page then aborts Want to Read before Goodreads creates the row.
+	settleCtx, cancelSettle := context.WithTimeout(ctx, 15*time.Second)
+	_, settleErr := waitForDocument(settleCtx, page, func(doc *goquery.Document) bool {
+		button := doc.Find(addSelector)
+		return button.Length() != 1 || normalizedVisibleText(button.Text()) != "want to read"
+	})
+	cancelSettle()
+	if clickErr == nil {
+		clickErr = settleErr
+	}
 	_ = page.Close()
 
 	added, readbackErr := findMutationCandidate(ctx, b, isbn, addMutationStage, true)
@@ -173,12 +185,10 @@ func resolvePublicBook(
 	if searchPage == nil {
 		return resolvedBook{}, nil, fmt.Errorf("%w at book.resolve: search results unavailable", ErrCompatibility)
 	}
-	// A completed search may have zero book routes. Waiting for a
-	// /book/show/ link would turn that legitimate absence into a timeout
-	// for unrecognized ISBNs and the unidentified-row public fallback.
-	searchDoc, err := waitForDocument(ctx, searchPage, func(doc *goquery.Document) bool {
-		return doc.Find("form[action='/search']").Length() == 1
-	})
+	// The search form is present before results hydrate. Snapshotting then
+	// treats a live ISBN hit as not-found. Wait for a book route or the
+	// completed empty-results marker; a finished empty page is not-found.
+	searchDoc, err := waitForDocument(ctx, searchPage, publicSearchReady)
 	if err != nil {
 		_ = searchPage.Close()
 		return resolvedBook{}, nil, err
@@ -235,7 +245,7 @@ func resolvePublicBook(
 			return false
 		}
 		// Already-owned book pages replace Want to Read with a shelf-status
-		// control. Identity proof only needs the metadata section.
+		// control. Identity proof uses visible metadata or JSON-LD.
 		if requireAddControl &&
 			doc.Find("div.Sticky div.BookActions button.Button--wtr.Button--block").Length() != 1 {
 			return false
@@ -246,9 +256,7 @@ func resolvePublicBook(
 		_ = page.Close()
 		return resolvedBook{}, nil, err
 	}
-	metadata := doc.Find("div.BookPageMetadataSection").Clone()
-	metadata.Find("script,style").Remove()
-	if textHasExactISBN(metadata.Text(), isbn) {
+	if bookPageHasExactISBN(doc, isbn) {
 		return resolved, page, nil
 	}
 	detailsSelector := "div.BookPageMetadataSection button.Button--inline"
@@ -262,9 +270,7 @@ func resolvePublicBook(
 	}
 	detailsCtx, cancelDetails := context.WithTimeout(ctx, 20*time.Second)
 	_, err = waitForDocument(detailsCtx, page, func(doc *goquery.Document) bool {
-		metadata := doc.Find("div.BookPageMetadataSection").Clone()
-		metadata.Find("script,style").Remove()
-		return textHasExactISBN(metadata.Text(), isbn)
+		return bookPageHasExactISBN(doc, isbn)
 	})
 	cancelDetails()
 	if err != nil {
@@ -275,6 +281,16 @@ func resolvePublicBook(
 		return resolvedBook{}, nil, fmt.Errorf("%w at book.resolve: exact ISBN was not visible", ErrCompatibility)
 	}
 	return resolved, page, nil
+}
+
+func publicSearchReady(doc *goquery.Document) bool {
+	if doc.Find("form[action='/search']").Length() == 0 {
+		return false
+	}
+	if doc.Find("a[href*='/book/show/']").Length() > 0 {
+		return true
+	}
+	return doc.Find(".NoBookSearchResults").Length() > 0
 }
 
 func waitForDocument(
@@ -298,6 +314,90 @@ func waitForDocument(
 		case <-ticker.C:
 		}
 	}
+}
+
+func bookPageHasExactISBN(doc *goquery.Document, isbn domain.ISBN) bool {
+	metadata := doc.Find("div.BookPageMetadataSection").Clone()
+	metadata.Find("script,style").Remove()
+	return textHasExactISBN(metadata.Text(), isbn) || jsonLDHasExactISBN(doc, isbn)
+}
+
+func jsonLDHasExactISBN(doc *goquery.Document, isbn domain.ISBN) bool {
+	found := false
+	doc.Find(`script[type='application/ld+json']`).EachWithBreak(func(_ int, script *goquery.Selection) bool {
+		if jsonHasBookISBN(strings.TrimSpace(script.Text()), isbn) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func jsonHasBookISBN(raw string, isbn domain.ISBN) bool {
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return false
+	}
+	return jsonTreeHasBookISBN(value, isbn)
+}
+
+func jsonTreeHasBookISBN(value any, isbn domain.ISBN) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if schemaTypeIsBook(typed["@type"]) {
+			switch raw := typed["isbn"].(type) {
+			case string:
+				if exactNormalizedISBN(raw, isbn) {
+					return true
+				}
+			case []any:
+				for _, item := range raw {
+					text, ok := item.(string)
+					if ok && exactNormalizedISBN(text, isbn) {
+						return true
+					}
+				}
+			}
+		}
+		for _, child := range typed {
+			if jsonTreeHasBookISBN(child, isbn) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if jsonTreeHasBookISBN(child, isbn) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func schemaTypeIsBook(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return schemaTypeNameIsBook(typed)
+	case []any:
+		for _, item := range typed {
+			text, ok := item.(string)
+			if ok && schemaTypeNameIsBook(text) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func schemaTypeNameIsBook(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "Book" || strings.HasSuffix(value, "/Book")
+}
+
+func exactNormalizedISBN(raw string, isbn domain.ISBN) bool {
+	parsed, err := domain.NormalizeISBN(raw)
+	return err == nil && parsed.ISBN13 == isbn.ISBN13
 }
 
 func textHasExactISBN(text string, isbn domain.ISBN) bool {

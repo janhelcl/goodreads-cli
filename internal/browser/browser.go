@@ -201,6 +201,14 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 			return nil, fmt.Errorf("browser download directory is missing or unsafe")
 		}
 	}
+	// The caller holds the profile lock, so any Chrome still using this
+	// directory is leftover from a previous command.
+	if err := stopProfileProcessesNow(opts.ProfileDir); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("%w: %v", ErrLaunch, err)
+	}
 	exe, err := ResolveExecutable(ctx, opts.BrowserPath)
 	if err != nil {
 		return nil, err
@@ -216,8 +224,12 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 	l.Bin(exe.Path).UserDataDir(opts.ProfileDir).Headless(opts.Headless).
 		RemoteDebuggingPort(0).Set("remote-debugging-address", "127.0.0.1").
 		Set("no-first-run").Set("no-startup-window")
+	// Leakless is a Rod supervisor, not a Chromium flag. It records the real
+	// browser PID and kills that process if this command exits without Close.
+	l.Leakless(true)
 	controlURL, err := l.Launch()
 	if err != nil {
+		_ = stopProfileProcessesNow(opts.ProfileDir)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -225,11 +237,13 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 	}
 	if !loopbackControlURL(controlURL) {
 		l.Kill()
+		_ = stopProfileProcessesNow(opts.ProfileDir)
 		return nil, fmt.Errorf("%w: debugging endpoint was not local", ErrLaunch)
 	}
 	r := rod.New().ControlURL(controlURL).Context(ctx)
 	if err := r.Connect(); err != nil {
 		l.Kill()
+		_ = stopProfileProcessesNow(opts.ProfileDir)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -241,7 +255,7 @@ func (RodFactory) Launch(ctx context.Context, opts LaunchOptions) (Browser, erro
 	}
 	b := &rodBrowser{
 		rod: r, launcher: l, allowed: allowed, login: opts.InteractiveLogin,
-		downloadDir: opts.DownloadDir,
+		downloadDir: opts.DownloadDir, profileDir: opts.ProfileDir,
 		runtimeInfo: RuntimeInfo{Product: exe.Product, Version: numericVersion(exe.Version)},
 	}
 	b.stopCancellation = context.AfterFunc(ctx, func() { _ = b.Close() })
@@ -316,6 +330,7 @@ type rodBrowser struct {
 	allowed          []string
 	login            bool
 	downloadDir      string
+	profileDir       string
 	stopCancellation func() bool
 	closeOnce        sync.Once
 	closeErr         error
@@ -380,17 +395,26 @@ func (b *rodBrowser) Close() error {
 		if b.stopCancellation != nil {
 			b.stopCancellation()
 		}
-		b.closeErr = b.rod.Close()
-		if b.closeErr != nil {
+		// The operation context may already be cancelled. Browser.close still
+		// has to go out on a live timeout so leftover Chrome cannot block the
+		// next command.
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
+		closeErr := b.rod.Context(closeCtx).Close()
+		cancelClose()
+		if closeErr != nil {
 			b.launcher.Kill()
-			return
 		}
-		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), 3*time.Second)
 		if err := waitProcessExit(waitCtx, b.launcher.PID()); err != nil {
 			b.launcher.Kill()
+			_ = waitProcessExit(waitCtx, b.launcher.PID())
+		}
+		cancelWait()
+		sweepCtx, cancelSweep := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := StopProfileProcesses(sweepCtx, b.profileDir); err != nil {
 			b.closeErr = fmt.Errorf("browser did not exit after close: %w", err)
 		}
+		cancelSweep()
 	})
 	return b.closeErr
 }

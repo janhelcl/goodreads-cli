@@ -35,7 +35,14 @@ func (s *service) Status(ctx context.Context) (result ConnectionStatus, err erro
 }
 
 func (s *service) Logout(ctx context.Context) (LogoutResult, error) {
-	err := s.withProfileLock(ctx, s.paths.RemoveBrowser)
+	err := s.withProfileLock(ctx, func() error {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := browser.StopProfileProcesses(stopCtx, s.paths.Browser); err != nil {
+			return err
+		}
+		return s.paths.RemoveBrowser()
+	})
 	if err != nil {
 		return LogoutResult{}, err
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/janhelcl/goodreads-cli/internal/browser"
 	"github.com/janhelcl/goodreads-cli/internal/domain"
 )
@@ -31,6 +32,61 @@ func TestTextHasExactISBN(t *testing.T) {
 	}
 	if textHasExactISBN("9781603580557", isbn) {
 		t.Fatal("mismatched ISBN accepted")
+	}
+}
+
+func TestJSONLDHasExactISBN(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := `{"@type":"Book","isbn":"9781603580557"}`
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"book isbn-13", `{"@type":"Book","isbn":"9780306406157"}`, true},
+		{"book isbn-10", `{"@type":"Book","isbn":"0-306-40615-2"}`, true},
+		{"schema url type", `{"@type":"https://schema.org/Book","isbn":"9780306406157"}`, true},
+		{"graph", `{"@graph":[{"@type":"Book","isbn":"9780306406157"}]}`, true},
+		{"type array", `{"@type":["Product","Book"],"isbn":"9780306406157"}`, true},
+		{"other book", other, false},
+		{"offer isbn", `{"@type":"Offer","isbn":"9780306406157"}`, false},
+		{"invalid json", `{`, false},
+	} {
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(
+			`<html><body><script type="application/ld+json">` + tc.raw + `</script></body></html>`,
+		))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := jsonLDHasExactISBN(doc, isbn); got != tc.want {
+			t.Fatalf("%s got=%t want=%t", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestResolvePublicBookAcceptsJSONLDISBN(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	bookURL := "https://www.goodreads.com/book/show/42.Invented_Book"
+	clicks := 0
+	book := &fakePage{url: bookURL, html: jsonLDBookFixture(false)}
+	book.click = func(string) error {
+		clicks++
+		return nil
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		searchURL: &fakePage{url: searchURL, html: addSearchFixture("/book/show/42.Invented_Book")},
+		bookURL:   book,
+	}}
+	resolved, page, err := resolvePublicBook(context.Background(), b, isbn, false)
+	if err != nil || resolved.BookID != "42" || page != book || clicks != 0 {
+		t.Fatalf("resolved=%+v page=%T err=%v clicks=%d calls=%v", resolved, page, err, clicks, b.calls)
 	}
 }
 
@@ -114,6 +170,27 @@ func TestLookupPublicBookIDAcceptsOwnedBookPage(t *testing.T) {
 	}
 }
 
+func TestPublicSearchReady(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		html  string
+		ready bool
+	}{
+		{"loading", `<html><body><p>loading</p></body></html>`, false},
+		{"hydrating form", hydratingPublicSearch, false},
+		{"hydrated result", addSearchFixture("/book/show/42.Invented_Book"), true},
+		{"completed empty", emptyPublicSearch, true},
+	} {
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(tc.html))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := publicSearchReady(doc); got != tc.ready {
+			t.Fatalf("%s ready=%t want %t", tc.name, got, tc.ready)
+		}
+	}
+}
+
 func TestResolvePublicBookReportsEmptySearch(t *testing.T) {
 	isbn, err := domain.NormalizeISBN("9780306406157")
 	if err != nil {
@@ -125,6 +202,51 @@ func TestResolvePublicBookReportsEmptySearch(t *testing.T) {
 	}}
 	if _, _, err := resolvePublicBook(context.Background(), b, isbn, false); !errors.Is(err, ErrBookNotFound) {
 		t.Fatalf("empty search=%v calls=%v", err, b.calls)
+	}
+}
+
+func TestResolvePublicBookDoesNotTreatHydratingSearchAsEmpty(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		searchURL: &fakePage{url: searchURL, html: hydratingPublicSearch},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, _, err = resolvePublicBook(ctx, b, isbn, false)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrBookNotFound) {
+		t.Fatalf("hydrating search=%v calls=%v", err, b.calls)
+	}
+}
+
+func TestResolvePublicBookWaitsUntilSearchResultsHydrate(t *testing.T) {
+	isbn, err := domain.NormalizeISBN("9780306406157")
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchURL := "https://www.goodreads.com/search?q=9780306406157&search_type=books"
+	bookURL := "https://www.goodreads.com/book/show/42.Invented_Book"
+	reads := 0
+	search := &fakePage{
+		url: searchURL,
+		htmlFunc: func() string {
+			reads++
+			if reads < 3 {
+				return hydratingPublicSearch
+			}
+			return addSearchFixture("/book/show/42.Invented_Book")
+		},
+	}
+	b := &fakeBrowser{pages: map[string]browser.Page{
+		searchURL: search,
+		bookURL:   &fakePage{url: bookURL, html: ownedBookFixture(true)},
+	}}
+	resolved, page, err := resolvePublicBook(context.Background(), b, isbn, false)
+	if err != nil || resolved.BookID != "42" || resolved.URL != bookURL || page == nil || reads < 3 {
+		t.Fatalf("resolved=%+v page=%T err=%v reads=%d calls=%v", resolved, page, err, reads, b.calls)
 	}
 }
 
@@ -160,6 +282,7 @@ func TestAddNewEditionClicksOnceAndVerifiesFreshOwnerRow(t *testing.T) {
 		if !strings.Contains(selector, "Button--wtr") {
 			t.Fatalf("unexpected add selector %q", selector)
 		}
+		book.html = ownedBookFixture(true)
 		return nil
 	}
 	empty := libraryTestPage(emptyOwnerLibrary, "https://www.goodreads.com/review/list/123")
@@ -383,7 +506,9 @@ func TestNewAddPreservesNestedStatusPartialDetails(t *testing.T) {
 	}
 }
 
-const emptyPublicSearch = `<html><body><form action="/search"></form></body></html>`
+const hydratingPublicSearch = `<html><body><form action="/search"></form></body></html>`
+
+const emptyPublicSearch = `<html><body><form action="/search"></form><div class="NoBookSearchResults"></div></body></html>`
 
 func addSearchFixture(route string) string {
 	return fmt.Sprintf(`<html><body><form action="/search"></form><a href="%s">result</a></body></html>`, route)
@@ -397,7 +522,15 @@ func ownedBookFixture(details bool) string {
 	return bookPageFixture(details, false)
 }
 
+func jsonLDBookFixture(wantToRead bool) string {
+	return bookPageHTML(false, wantToRead, `{"@context":"https://schema.org","@type":"Book","isbn":"9780306406157"}`)
+}
+
 func bookPageFixture(details, wantToRead bool) string {
+	return bookPageHTML(details, wantToRead, "")
+}
+
+func bookPageHTML(details, wantToRead bool, jsonLD string) string {
 	metadata := ""
 	if details {
 		metadata = `<div class="TruncatedContent__text TruncatedContent__text--small">9780306406157 <span>(ISBN10: 0306406152)</span></div>`
@@ -406,7 +539,11 @@ func bookPageFixture(details, wantToRead bool) string {
 	if wantToRead {
 		action = `<button class="Button Button--wtr Button--block">Want to Read</button>`
 	}
-	return `<html><body>
+	script := ""
+	if jsonLD != "" {
+		script = `<script type="application/ld+json">` + jsonLD + `</script>`
+	}
+	return `<html><body>` + script + `
 	<div class="Sticky"><div class="BookActions"><div class="BookActions__button">` + action + `</div></div></div>
 	<div class="BookPageMetadataSection"><button class="Button Button--inline">Book details</button>` +
 		metadata + `</div></body></html>`
