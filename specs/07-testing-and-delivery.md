@@ -286,6 +286,8 @@ Continuous CI runs for pull requests and pushes to `main` and includes:
 - builds on Linux, macOS, and Windows;
 - dependency/vulnerability scan where practical;
 - a Linux Chromium job with `GOODREADS_BROWSER_TESTS=1` for local-server browser tests.
+- native macOS and Windows tests for exact dedicated-profile process discovery
+  and termination.
 
 The tag-triggered release workflow must run or depend on the same required checks before publishing artifacts. Browser-component tests use only local synthetic pages and require no Goodreads credentials.
 

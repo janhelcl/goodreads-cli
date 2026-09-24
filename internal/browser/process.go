@@ -23,7 +23,7 @@ func StopProfileProcesses(ctx context.Context, profileDir string) error {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		pids, err := processesUsingProfile(profileDir)
+		pids, err := processesUsingProfile(ctx, profileDir)
 		if err != nil {
 			return err
 		}
@@ -35,14 +35,7 @@ func StopProfileProcesses(ctx context.Context, profileDir string) error {
 		}
 		select {
 		case <-ctx.Done():
-			remaining, err := processesUsingProfile(profileDir)
-			if err != nil {
-				return err
-			}
-			if len(remaining) == 0 {
-				return nil
-			}
-			return fmt.Errorf("leftover browser still using the dedicated profile")
+			return ctx.Err()
 		case <-ticker.C:
 		}
 	}
@@ -61,13 +54,13 @@ func commandLineUsesProfile(args []string, profileDir string) bool {
 	profileDir = filepath.Clean(profileDir)
 	for i, arg := range args {
 		if arg == "--user-data-dir" {
-			if i+1 < len(args) && filepath.Clean(args[i+1]) == profileDir {
+			if i+1 < len(args) && profilePathsEqual(args[i+1], profileDir) {
 				return true
 			}
 			continue
 		}
 		path, ok := strings.CutPrefix(arg, "--user-data-dir=")
-		if ok && filepath.Clean(path) == profileDir {
+		if ok && profilePathsEqual(path, profileDir) {
 			return true
 		}
 	}

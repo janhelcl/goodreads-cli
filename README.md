@@ -54,7 +54,8 @@ Version tags produce cross-platform release archives and a SHA-256 checksum
 manifest. Pull requests and `main` run formatting, vet, Staticcheck, tests,
 live-probe compilation, race detection, vulnerability scanning, six target
 builds, and local-only Chrome integration flows before release packaging
-repeats those gates.
+repeats those gates. Native macOS and Windows jobs also exercise exact
+dedicated-profile process discovery and termination.
 Authentication, populated/filtered shelf reads, and reversible live canaries
 for add, status, rating, finish date, and review passed. Exact lookup treats a
 unique owner ISBN match as conclusive when no other row shares that book ID,
