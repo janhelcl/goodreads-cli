@@ -554,7 +554,7 @@ func TestLaunchClearsLeftoverProfileChrome(t *testing.T) {
 	})
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		pids, err := processesUsingProfile(paths.Browser)
+		pids, err := processesUsingProfile(ctx, paths.Browser)
 		if err == nil && len(pids) > 0 {
 			break
 		}
@@ -593,7 +593,9 @@ func TestLaunchClearsLeftoverProfileChrome(t *testing.T) {
 
 func assertNoProfileChrome(t *testing.T, profileDir string) {
 	t.Helper()
-	pids, err := processesUsingProfile(profileDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pids, err := processesUsingProfile(ctx, profileDir)
 	if err != nil || len(pids) != 0 {
 		t.Fatalf("leftover profile chrome: pids=%v err=%v", pids, err)
 	}

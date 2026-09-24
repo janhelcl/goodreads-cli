@@ -116,3 +116,25 @@ jobs:
         env:
           GOODREADS_BROWSER_TESTS: "1"
           GOODREADS_CLI_BROWSER: google-chrome
+
+  process-cleanup:
+    name: Process cleanup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test native process cleanup
+        run: go test -count=1 ./internal/browser
